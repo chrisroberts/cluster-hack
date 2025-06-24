@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+
+csource="${BASH_SOURCE[0]}"
+while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
+root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
+
+. "${root}/common.bash" || exit 1
+
+cluster-must-exist
+
+readarray -t list < <(get-instances)
+
+servers="0"
+clients="0"
+consuls="0"
+
+for instance in "${list[@]}"; do
+    case "${instance}" in
+        *"server"*)
+            ((servers++))
+            ;;
+        *"client"*)
+            ((clients++))
+            ;;
+        *"consul"*)
+            ((consuls++))
+            ;;
+    esac
+done
+
+printf "Current Cluster Status (%b%s%b)\n\n" "${TEXT_YELLOW}" "${DIR_SHA}" "${TEXT_CLEAR}"
+printf "» Nomad servers: %d instances\n" "${servers}"
+printf "» Nomad clients: %d instances\n" "${clients}"
+if [ "${consuls}" -gt "0" ]; then
+    printf "%b•%b consul: %benabled%b (%d servers)\n" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${consuls}"
+else
+    printf "%b•%b consul: %bdisabled%b\n" "${TEXT_RED}" "${TEXT_CLEAR}" "${TEXT_RED}" "${TEXT_CLEAR}"
+fi

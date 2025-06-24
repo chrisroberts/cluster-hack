@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+
+csource="${BASH_SOURCE[0]}"
+while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
+root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
+
+. "${root}/common.bash"
+
+for arg in "$@"; do
+    shift
+    case "${arg}" in
+        "--all") set -- "${@}" "-a" ;;
+        "--servers") set -- "${@}" "-s" ;;
+        "--clients") set -- "${@}" "-c" ;;
+        "--help") set -- "${@}" "-h" ;;
+        *) set -- "${@}" "${arg}" ;;
+    esac
+done
+
+while getopts "ahcsC" opt; do
+    case "${opt}" in
+        "a")
+            clients="1"
+            servers="1"
+            ;;
+        "c") clients="1" ;;
+        "s") servers="1" ;;
+        "h") help="1" ;;
+        *) help="1" ;;
+    esac
+done
+shift $((OPTIND-1))
+
+if [ "${#}" -lt "1" ] && [ -z "${servers}" ] && [ -z "${clients}" ]; then
+    help="1"
+fi
+
+if [ -n "${help}" ]; then
+    printf "Usage: %s [options] [INSTANCE [INSTANCE...]]\n" "${SCRIPT_NAME}"
+    printf "\t--all, -a\tRestart nomad client and server processes\n"
+    printf "\t--servers, -s\tRestart nomad server processes\n"
+    printf "\t--clients, -c\tRestart nomad client processes\n"
+    exit 1
+fi
+
+cluster-must-exist
+
+list=()
+
+if [ -n "${clients}" ]; then
+    readarray -t rlist < <(get-instances client)
+    list+=("${rlist[@]}")
+fi
+
+if [ -n "${servers}" ]; then
+    readarray -t rlist < <(get-instances server)
+    list+=("${rlist[@]}")
+fi
+
+if [ "${#}" -gt 0 ]; then
+    list+=("${@}")
+fi
+
+restart-nomad "${list[@]}" || exit

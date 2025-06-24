@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+
+csource="${BASH_SOURCE[0]}"
+while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
+root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
+
+. "${root}/common.bash" || exit 1
+
+for arg in "$@"; do
+    shift
+    case "${arg}" in
+        "--all") set -- "${@}" "-a" ;;
+        "--servers") set -- "${@}" "-s" ;;
+        "--clients") set -- "${@}" "-c" ;;
+        "--consuls") set -- "${@}" "-C" ;;
+        "--help") set -- "${@}" "-h" ;;
+        *) set -- "${@}" "${arg}" ;;
+    esac
+done
+
+while getopts "ahcsC" opt; do
+    case "${opt}" in
+        "a")
+            clients="1"
+            servers="1"
+            consuls="1"
+            ;;
+        "c") clients="1" ;;
+        "s") servers="1" ;;
+        "C") consuls="1" ;;
+        "h") help="1" ;;
+        *) help="1" ;;
+    esac
+done
+shift $((OPTIND-1))
+
+if [ -z "${consuls}" ] && [ -z "${clients}" ] && [ -z "${servers}" ] && [ "${#}" -lt "1" ]; then
+    help="1"
+fi
+
+if [ -n "${help}" ]; then
+    printf "Usage: %s [options] [INSTANCE [INSTANCE...]]\n" "${SCRIPT_NAME}"
+    printf "\t--all, -a\tStream all logs\n"
+    printf "\t--clients, -c\tStream all client logs\n"
+    printf "\t--servers, -s\tStream all server logs\n"
+    printf "\t--consuls, -C\tStream all consul logs\n"
+    exit 1
+fi
+
+cluster-must-exist
+
+pids=()
+if [ -n "${servers}" ]; then
+    readarray -t list < <(get-instances server)
+    for i in "${list[@]}"; do
+        stream-logs "${i}" &
+        pids+=("${!}")
+    done
+fi
+
+if [ -n "${clients}" ]; then
+    readarray -t list < <(get-instances client)
+    for i in "${list[@]}"; do
+        stream-logs "${i}" &
+        pids+=("${!}")
+    done
+fi
+
+if [ -n "${consuls}" ]; then
+    readarray -t list < <(get-instances consul)
+    for i in "${list[@]}"; do
+        stream-logs "${i}" &
+        pids+=("${!}")
+    done
+fi
+
+for i in "${@}"; do
+    stream-logs "${i}" &
+    pids+=("${!}")
+done
+
+# Just wait here until everything is done
+for pid in "${pids[@]}"; do
+    wait "${pid}"
+done

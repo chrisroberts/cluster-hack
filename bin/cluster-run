@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+
+csource="${BASH_SOURCE[0]}"
+while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
+root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
+
+. "${root}/common.bash" || exit 1
+
+for arg in "${@}"; do
+    case "${arg}" in
+        "--all" | "-a")
+            shift
+            clients="1"
+            servers="1"
+            ;;
+        "--servers" | "-s")
+            shift
+            servers="1"
+            ;;
+        "--clients" | "-c")
+            shift
+            clients="1"
+            ;;
+        "--instance" | "-i")
+            shift
+            instance="${1}"
+            shift
+            ;;
+        "--help" | "-h")
+            shift
+            help="1"
+            ;;
+        "--")
+            break
+            ;;
+    esac
+done
+
+if [ -z "${clients}" ] && [ -z "${servers}" ] && [ -z "${instance}" ]; then
+    help="1"
+fi
+
+if [ -n "${help}" ]; then
+    printf "Usage: %s [options] [COMMAND...]\n" "${SCRIPT_NAME}"
+    printf "\t--all, -a\t\t\tRun on all instances\n"
+    printf "\t--clients, -c\t\t\tRun on client instances\n"
+    printf "\t--servers, -s\t\t\tRun on server instances\n"
+    printf "\t--instance NAME, -i NAME\tRun on single instance\n"
+    exit 1
+fi
+
+cluster-must-exist
+
+cmd=("${@}")
+pids=()
+if [ -n "${servers}" ]; then
+    readarray -t list < <(get-instances server)
+    for i in "${list[@]}"; do
+        run-command "${i}" "${cmd[@]}" &
+        pids+=("${!}")
+    done
+fi
+
+if [ -n "${clients}" ]; then
+    readarray -t list < <(get-instances client)
+    for i in "${list[@]}"; do
+        run-command "${i}" "${cmd[@]}" &
+        pids+=("${!}")
+    done
+fi
+
+if [ -n "${instance}" ]; then
+    run-command "${instance}" "${cmd[@]}" &
+    pids=("${!}")
+fi
+
+result=0
+for pid in "${pids[@]}"; do
+    if ! wait "${pid}"; then
+        result=1;
+    fi
+done
+
+if [ "${result}" != "0" ]; then
+    failure "Errors encountered during command runs"
+fi
+
+success "All command runs are complete"

@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+
+# Defaults
+help=""
+servers="0"
+clients="0"
+memory="1GiB"
+cpus="1"
+image="ubuntu/noble"
+consul="0"
+
+for arg in "$@"; do
+    shift
+    case "${arg}" in
+        "--servers") set -- "${@}" "-s" ;;
+        "--clients") set -- "${@}" "-c" ;;
+        "--memory") set -- "${@}" "-m" ;;
+        "--cpus") set -- "${@}" "-C" ;;
+        "--image") set -- "${@}" "-i" ;;
+        "--consul") set -- "${@}" "-o" ;;
+        "--help") set -- "${@}" "-h" ;;
+        *) set -- "${@}" "${arg}" ;;
+    esac
+done
+
+while getopts "hc:s:m:C:i:o:" opt; do
+    case "${opt}" in
+        "c") clients="${OPTARG}" ;;
+        "s") servers="${OPTARG}" ;;
+        "C") cpus="${OPTARG}" ;;
+        "m") memory="${OPTARG}" ;;
+        "i") image="${OPTARG}" ;;
+        "o") consul="${OPTARG}" ;;
+        "h") help="1" ;;
+        *) help="1" ;;
+    esac
+done
+shift $((OPTIND-1))
+
+csource="${BASH_SOURCE[0]}"
+while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
+root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
+
+. "${root}/common.bash" || exit
+
+LAUNCH_ARGS=("--config" "limits.memory=${memory}" "--config" "limits.cpu=${cpus}" "--ephemeral" "--profile" "${PROFILE_NAME}" "images:${image}")
+
+if [ -n "${help}" ]; then
+    printf "Usage: %s --servers n --clients n\n" "${SCRIPT_NAME}"
+    printf "\t--clients NUM, -c NUM\tNumber of client instances (1 minimum)\n"
+    printf "\t--servers NUM, -s NUM\tNumber of server instances (3 minimum)\n"
+    printf "\t--cpus NUM, -C NUM\tNumber of CPUs to assign instance (default: 1)\n"
+    printf "\t--memory MEM, -m MEM\tMaximum memory allocated (default: 1GiB)\n"
+    printf "\t--image NAME, -i NAME\tImage for instances\n"
+    printf "\t--consul NUM, -o NUM\tEnable consul with number of servers (3 minimum)\n"
+    exit 1
+fi
+
+if [ "${servers}" -gt "0" ] && [ "${servers}" -lt "3" ]; then
+    failure "Minimum number of server instances is 3"
+fi
+
+if [ "${clients}" -lt "1" ]; then
+    failure "Minimum number of client instances is 1"
+fi
+
+if [ "${consul}" -gt "0" ]; then
+    consul_enabled="1"
+fi
+
+if [ -n "${consul_enabled}" ] && [ "${consul}" -lt "3" ]; then
+    failure "Minimum number of consul server instances is 3"
+fi
+
+cluster-must-not-exist
+
+if [ -n "${consul_enabled}" ]; then
+    info "Creating new consul cluster - %d servers..." "${consul}"
+    # Create the seed instance
+    create-consul-instance "consul0" || exit
+    consul-init || exit
+    configure-consul-server "consul0" "${consul}" || exit
+
+    # Now create the rest
+    pids=()
+    for ((idx=1; idx<"${consul}"; idx++)); do
+        create-consul-instance "consul${idx}" &
+        pids+=("${!}")
+    done
+    result=""
+    for pid in "${pids[@]}"; do
+        if ! wait "${pid}"; then
+            result="1"
+        fi
+    done
+    if [ -n "${result}" ]; then
+        failure "Error encountered during consul instance creation"
+    fi
+
+    pids=()
+    for ((idx=1; idx<"${consul}"; idx++)); do
+        configure-consul-server "consul${idx}" "${consul}" &
+        pids+=("${!}")
+    done
+    result=""
+    for pid in "${pids[@]}"; do
+        if ! wait "${pid}"; then
+            result="1"
+        fi
+    done
+    if [ -n "${result}" ]; then
+        failure "Error encountered during consul instance configuration"
+    fi
+
+    success "Consul cluster creation complete"
+fi
+
+info "Creating new nomad cluster - %d servers with %d clients" "${servers}" "${clients}"
+
+info "Setting up nomad server instances..."
+start_idx="0"
+
+if [ -z "${consul_enabled}" ]; then
+    # Setup the seed instance
+    create-nomad-instance "server0" || exit
+    configure-nomad-server "server0" "${servers}" || exit
+    start-service "server0" "nomad" || exit
+
+    start_idx="1"
+fi
+
+pids=()
+for ((idx="${start_idx}"; idx<"${servers}"; idx++)); do
+    launch-nomad-server-instance "server${idx}" "${servers}" "${consul_enabled}" &
+    pids+=("${!}")
+done
+result=""
+for pid in "${pids[@]}"; do
+    if ! wait "${pid}"; then
+        result="1"
+    fi
+done
+if [ -n "${result}" ]; then
+    failure "Error encountered while creating nomad server instances"
+fi
+
+success "Nomad server instances created"
+
+info "Setting up nomad client instances..."
+
+pids=()
+for ((idx="0"; idx<"${clients}"; idx++)); do
+    launch-nomad-client-instance "client${idx}" "${consul_enabled}" &
+    pids+=("${!}")
+done
+
+result=""
+for pid in "${pids[@]}"; do
+    if ! wait "${pid}"; then
+        result="1"
+    fi
+done
+
+if [ -n "${result}" ]; then
+    failure "Error encountered during nomad client setup"
+fi
+
+success "Nomad client instances created"
+
+addr="$(get-instance-address "client0")"
+info "Found client address for requests - %s" "${addr}"
+
+# If no .envrc file, just output and exit
+if [ ! -f "./.envrc" ]; then
+    success "Cluster creation complete - %s servers / %s clients\n" "${servers}" "${clients}"
+    printf "  export NOMAD_ADDR=\"http://%s:4646\"\n" "${addr}"
+
+    exit
+fi
+
+# Grab the contents of the file
+envrc="$(<./.envrc)"
+
+# If the header isn't found, don't modify
+if [[ "${envrc}" != "${ENVRC_HEADER}"* ]]; then
+    info "Cluster creation complete - %s servers / %s clients\n" "${servers}" "${clients}"
+    printf "  export NOMAD_ADDR=\"http://%s:4646\"\n" "${addr}"
+
+    exit
+fi
+
+info "Updating direnv with new nomad address..."
+
+sed -i.bak "s/export NOMAD_ADDR=.*$/export NOMAD_ADDR=\"http:\/\/${addr}:4646\"/" ./.envrc ||
+    failure "Unable to update direnv with new nomad address: http://%s:4646" "${addr}"
+
+printf "  *** Waiting for client HTTP to be available.."
+
+while true; do
+    if curl -f --head "http://${addr}:4646" > /dev/null 2>&1; then
+        printf " ready!\n"
+        break
+    fi
+    printf "."
+    sleep 1
+done
+
+if [ -n "${consul_enabled}" ]; then
+    success "Cluster creation complete - %s servers / %s clients" "${servers}" "${clients}"
+    success "         consul enabled (%d servers)" "${consul}"
+else
+    success "Cluster creation complete - %s servers / %s clients" "${servers}" "${clients}"
+fi

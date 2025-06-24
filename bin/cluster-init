@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+
+csource="${BASH_SOURCE[0]}"
+while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
+root="$( cd -P "$( dirname "$csource" )/../" && pwd )" || exit 1
+
+. "${root}/bin/common.bash" || exit
+
+if [ "${#}" -ne 1 ] || [ "${1}" == "-h" ] || [ "${1}" == "--help" ]; then
+    printf "Usage: %s NOMAD_REPO_DIR\n" "${SCRIPT_NAME}"
+    exit 1
+fi
+
+if [ -f "./.envrc" ]; then
+    failure "Direnv file (./.envrc) already exists, will not overwrite!"
+fi
+
+if ! command -v incus > /dev/null; then
+    failure "Required application 'incus' was not found. Install and run again."
+fi
+
+nomad_dir="${1}"
+if [ ! -d "${nomad_dir}" ]; then
+    failure "Path provided is not a valid directory (%s)" "${nomad_dir}"
+fi
+# Expand out the path
+nomad_dir="$( cd -P "${nomad_dir}" && pwd )"
+
+
+printf '%s\nexport PATH="%s:%s:${PATH}"\nexport NOMAD_ADDR=""\n' "${ENVRC_HEADER}" "${root}/bin" "${nomad_dir}/bin" > ./.envrc
+
+info "Wrote new managed direnv configuration file"
+
+if [ ! -e "./jobs" ]; then
+    ln -s "${root}/jobs" "./jobs" ||
+        failure "Could not link jobs directory to current working directory"
+
+    info "Linked jobs directory to ./jobs"
+else
+    warn "Not linking jobs directory (./jobs already exists)"
+fi
+
+profile="
+config: {}
+description: cluster hack profile
+devices:
+  eth0:
+    name: eth0
+    network: incusbr1
+    type: nic
+  root:
+    path: /
+    pool: default
+    type: disk
+  nomad:
+    path: /nomad
+    source: ${nomad_dir}
+    type: disk
+  cluster:
+    path: /cluster
+    source: ${root}
+    type: disk
+name: ${PROFILE_NAME}
+project: default
+"
+
+if incus profile list -f json | jq -er '.[] | select(.name == "'"${PROFILE_NAME}"'") | .name' > /dev/null; then
+    warn "Profile %s already exists within incus, not overwriting" "${PROFILE_NAME}"
+else
+    printf "%s" "${profile}" | incus profile create "${PROFILE_NAME}" ||
+        failure "Unable to create new profile (%s)" "${PROFILE_NAME}"
+    info "Created new incus profile %s" "${PROFILE_NAME}"
+fi
+
+success "Initialization complete for cluster-hack"

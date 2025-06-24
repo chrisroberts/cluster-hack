@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+
+csource="${BASH_SOURCE[0]}"
+while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
+root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
+
+. "${root}/common.bash" || exit 1
+
+for arg in "${@}"; do
+    if [ "${arg}" == "-h" ] || [ "${arg}" == "--help" ]; then
+        printf "Usage: %s [INSTANCE_NAME [INSTANCE_NAME...]]\n" "${SCRIPT_NAME}"
+        exit 1
+    fi
+done
+
+cluster-must-exist
+
+if [ "${#}" -lt "1" ]; then
+    instance_list="$(get-instances)"
+    readarray -t instances < <(printf "%s" "${instance_list}")
+else
+    instances=("${@}")
+fi
+
+pids=()
+for instance in "${instances[@]}"; do
+    delete-instance "${instance}" &
+    pids+=("${!}")
+done
+
+result=0
+for pid in "${pids[@]}"; do
+    if ! wait "${pid}"; then
+        result=1
+    fi
+done
+
+exit "${result}"

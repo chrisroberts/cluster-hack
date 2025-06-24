@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+script="${1}"
+file="${2}"
+destination="${3}"
+
+sed "${script}" "${file}" > "${destination}"

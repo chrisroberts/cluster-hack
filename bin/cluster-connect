@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+csource="${BASH_SOURCE[0]}"
+while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
+root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
+
+. "${root}/common.bash"
+
+for arg in "${@}"; do
+    if [ "${arg}" == "-h" ] || [ "${arg}" == "--help" ]; then
+        printf "Usage: %s INSTANCE\n" "${SCRIPT_NAME}"
+        exit 1
+    fi
+done
+
+if [ "${#}" -gt "1" ]; then
+    failure "Only one instance is allowed for connect"
+fi
+
+if [ "${#}" -lt "1" ]; then
+    failure "Instance is required for connect"
+fi
+
+cluster-must-exist
+connect-instance "${1}"

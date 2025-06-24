@@ -1,0 +1,3 @@
+client {
+  servers = ["%ADDR%"]
+}
