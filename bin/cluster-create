@@ -194,7 +194,7 @@ info "Updating direnv with new nomad address..."
 sed -i.bak "s/export NOMAD_ADDR=.*$/export NOMAD_ADDR=\"http:\/\/${addr}:4646\"/" ./.envrc ||
     failure "Unable to update direnv with new nomad address: http://%s:4646" "${addr}"
 
-printf "  *** Waiting for client HTTP to be available.."
+printf " • Waiting for client HTTP to be available.."
 
 while true; do
     if curl -f --head "http://${addr}:4646" > /dev/null 2>&1; then

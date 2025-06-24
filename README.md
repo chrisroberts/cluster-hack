@@ -48,6 +48,7 @@ Custom configuration can be applied to the nomad instances.
 * `cluster-connect` - Connect to a cluster instance
 * `cluster-create` - Create a cluster 
 * `cluster-destroy` - Destroy a cluster
+* `cluster-drain` - Drain nomad client(s)
 * `cluster-reconfigure` - Reconfigure nomad process(es)
 * `cluster-restart` - Restart nomad process(es)
 * `cluster-run` - Execute command on instance(s)

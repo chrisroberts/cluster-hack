@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+
+csource="${BASH_SOURCE[0]}"
+while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
+root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
+
+. "${root}/common.bash" || exit 1
+
+for arg in "${@}"; do
+    if [ "${arg}" == "-h" ] || [ "${arg}" == "--help" ]; then
+        printf "Usage: %s NODE[ NODE...]\n" "${SCRIPT_NAME}"
+        exit 1
+    fi
+done
+
+nodes=()
+for node in "${@}"; do
+    nodes+=("$(name-to-node "${node}")") || exit
+done
+
+info "Draining nodes - %s" "${nodes[*]}"
+
+pids=()
+for node in "${nodes[@]}"; do
+    # Convert the name if given instance names
+    node="$(name-to-node "${node}")"
+    nomad node drain -enable -yes "${node}" &
+    pids+=("${!}")
+done
+
+for pid in "${pids[@]}"; do
+    wait "${pid}"
+done
+
+success "Drain of nodes complete"
+info "Re-enabling nodes eligibility..."
+
+for node in "${nodes[@]}"; do
+    nomad node eligibility -enable "${node}" > /dev/null
+done
+
+success "Nodes marked as eligible"

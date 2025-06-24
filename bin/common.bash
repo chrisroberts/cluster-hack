@@ -545,7 +545,7 @@ function name-to-node() {
     local nodes node
     readarray -t nodes < <(get-nodes)
     for node in "${nodes[@]}"; do
-        if [ "${node}" == "${name}" ]; then
+        if [[ "${node}" == "${name}"* ]]; then
             printf "%s" "${node}"
             return
         fi
@@ -632,7 +632,7 @@ function failure() {
     local i=$(( ${#} - 1 ))
     local msg_args=("${@:2:$i}")
 
-    printf "%b[FAILURE]%b: ${msg_template}\n" "${TEXT_RED}" "${TEXT_CLEAR}" "${msg_args[@]}" >&2
+    printf "%b×%b ${msg_template}\n" "${TEXT_RED}" "${TEXT_CLEAR}" "${msg_args[@]}" >&2
 
     exit 1
 }
@@ -643,7 +643,7 @@ function error() {
     local i=$(( ${#} - 1 ))
     local msg_args=("${@:2:$i}")
 
-    printf "%b[ERROR]%b: ${msg_template}\n" "${TEXT_RED}" "${TEXT_CLEAR}" "${msg_args[@]}" >&2
+    printf "%b»%b ${msg_template}\n" "${TEXT_RED}" "${TEXT_CLEAR}" "${msg_args[@]}" >&2
 }
 
 # Write success message
@@ -652,7 +652,7 @@ function success() {
     local i=$(( ${#} - 1 ))
     local msg_args=("${@:2:$i}")
 
-    printf "%b[SUCCESS]%b: ${msg_template}\n" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${msg_args[@]}"
+    printf "%b»%b ${msg_template}\n" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${msg_args[@]}"
 }
 
 # Write warning message
@@ -661,7 +661,7 @@ function warn() {
     local i=$(( ${#} - 1 ))
     local msg_args=("${@:2:$i}")
 
-    printf "%b[WARN]%b: ${msg_template}\n" "${TEXT_YELLOW}" "${TEXT_CLEAR}" "${msg_args[@]}"
+    printf "%b»%b ${msg_template}\n" "${TEXT_YELLOW}" "${TEXT_CLEAR}" "${msg_args[@]}"
 }
 
 # Write information message
@@ -670,7 +670,7 @@ function info() {
     local i=$(( ${#} - 1 ))
     local msg_args=("${@:2:$i}")
 
-    printf "%b[INFO]%b: ${msg_template}\n" "${TEXT_BOLD}" "${TEXT_CLEAR}" "${msg_args[@]}"
+    printf "%b›%b ${msg_template}\n" "${TEXT_BOLD}" "${TEXT_CLEAR}" "${msg_args[@]}"
 }
 
 # Check that cluster exists and fail
