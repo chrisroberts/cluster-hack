@@ -491,8 +491,7 @@ function stream-logs() {
         *"consul"*) service_name="consul" ;;
     esac
 
-    #incus exec "${instance}" -- journalctl -o cat --output-fields=_HOSTNAME,MESSAGE -u nomad.service -f
-    incus exec "${instance}" -- journalctl -o cat -u "${service_name}" -f
+    incus exec "${instance}" -- /cluster/helpers/stream-log "${service_name}"
 }
 
 # Helpers
