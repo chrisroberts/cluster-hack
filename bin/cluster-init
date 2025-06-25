@@ -40,13 +40,16 @@ else
     warn "Not linking jobs directory (./jobs already exists)"
 fi
 
+bridge="$(incus network list -f json | jq -r '.[] | select(.name | contains("incusbr")) | .name')" ||
+    failure "Could not detect the incus bridge"
+
 profile="
 config: {}
 description: cluster hack profile
 devices:
   eth0:
     name: eth0
-    network: incusbr1
+    network: ${bridge}
     type: nic
   root:
     path: /
@@ -67,7 +70,8 @@ project: default
 if incus profile list -f json | jq -er '.[] | select(.name == "'"${PROFILE_NAME}"'") | .name' > /dev/null; then
     warn "Profile %s already exists within incus, not overwriting" "${PROFILE_NAME}"
 else
-    printf "%s" "${profile}" | incus profile create "${PROFILE_NAME}" ||
+    printf "%s" "${profile}" > /tmp/hack-profile.yaml
+    incus profile create "${PROFILE_NAME}" < /tmp/hack-profile.yaml ||
         failure "Unable to create new profile (%s)" "${PROFILE_NAME}"
     info "Created new incus profile %s" "${PROFILE_NAME}"
 fi
