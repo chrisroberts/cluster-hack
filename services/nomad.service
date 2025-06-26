@@ -19,7 +19,7 @@ User=root
 Group=root
 
 ExecReload=/bin/kill -HUP $MAINPID
-ExecStart=/nomad/bin/nomad agent -config /etc/nomad/config.d
+ExecStart=/cluster-bins/nomad agent -config /etc/nomad/config.d
 KillMode=process
 KillSignal=SIGINT
 LimitNOFILE=65536

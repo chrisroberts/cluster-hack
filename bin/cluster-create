@@ -8,6 +8,7 @@ memory="1GiB"
 cpus="1"
 image="ubuntu/noble"
 consul="0"
+vm=""
 
 for arg in "$@"; do
     shift
@@ -18,12 +19,13 @@ for arg in "$@"; do
         "--cpus") set -- "${@}" "-C" ;;
         "--image") set -- "${@}" "-i" ;;
         "--consul") set -- "${@}" "-o" ;;
+        "--vm") set -- "${@}" "-v" ;;
         "--help") set -- "${@}" "-h" ;;
         *) set -- "${@}" "${arg}" ;;
     esac
 done
 
-while getopts "hc:s:m:C:i:o:" opt; do
+while getopts "hc:s:m:C:i:o:v" opt; do
     case "${opt}" in
         "c") clients="${OPTARG}" ;;
         "s") servers="${OPTARG}" ;;
@@ -31,6 +33,7 @@ while getopts "hc:s:m:C:i:o:" opt; do
         "m") memory="${OPTARG}" ;;
         "i") image="${OPTARG}" ;;
         "o") consul="${OPTARG}" ;;
+        "v") vm="1" ;;
         "h") help="1" ;;
         *) help="1" ;;
     esac
@@ -43,7 +46,11 @@ root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
 
 . "${root}/common.bash" || exit
 
-LAUNCH_ARGS=("--config" "limits.memory=${memory}" "--config" "limits.cpu=${cpus}" "--ephemeral" "--profile" "${PROFILE_NAME}" "images:${image}")
+LAUNCH_ARGS=()
+if [ -n "${vm}" ]; then
+    LAUNCH_ARGS+=("--vm")
+fi
+LAUNCH_ARGS+=("--config" "limits.memory=${memory}" "--config" "limits.cpu=${cpus}" "--ephemeral" "--profile" "${PROFILE_NAME}" "images:${image}")
 
 if [ -n "${help}" ]; then
     printf "Usage: %s --servers n --clients n\n" "${SCRIPT_NAME}"
@@ -53,6 +60,7 @@ if [ -n "${help}" ]; then
     printf "\t--memory MEM, -m MEM\tMaximum memory allocated (default: 1GiB)\n"
     printf "\t--image NAME, -i NAME\tImage for instances\n"
     printf "\t--consul NUM, -o NUM\tEnable consul with number of servers (3 minimum)\n"
+    printf "\t--vm, -v\t\tUse virtual machine instances\n"
     exit 1
 fi
 
@@ -77,7 +85,7 @@ cluster-must-not-exist
 if [ -n "${consul_enabled}" ]; then
     info "Creating new consul cluster - %d servers..." "${consul}"
     # Create the seed instance
-    create-consul-instance "consul0" || exit
+    create-cluster-instance "consul0" || exit
     consul-init || exit
     configure-consul-server "consul0" "${consul}" || exit
 
@@ -122,7 +130,7 @@ start_idx="0"
 
 if [ -z "${consul_enabled}" ]; then
     # Setup the seed instance
-    create-nomad-instance "server0" || exit
+    create-cluster-instance "server0" || exit
     configure-nomad-server "server0" "${servers}" || exit
     start-service "server0" "nomad" || exit
 

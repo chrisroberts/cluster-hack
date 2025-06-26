@@ -12,21 +12,40 @@ TEXT_RED='\e[31m'
 TEXT_GREEN='\e[32m'
 TEXT_YELLOW='\e[33m'
 
+HELPER_SCRIPTS=("config-scrub" "sed-helper" "stream-log")
+
 # CRUD
 
-# Create a new nomad instance
+# Create a new cluster instance
 #
 # $1 - Name of instance
-function create-nomad-instance() {
+function create-cluster-instance() {
     local name="${1?Name for instance required}"
     if [[ "${name}" != "${NOMAD_INSTANCE_PREFIX}"* ]]; then
         name="${NOMAD_INSTANCE_PREFIX}${name}"
     fi
 
-    info "Launching nomad cluster instance %s..." "${name}"
+    info "Launching cluster instance %s..." "${name}"
     incus launch "${LAUNCH_ARGS[@]}" "${name}" > /dev/null ||
-        failure "Error encountered launching nomad cluster instance %s" "${name}"
-    success "Launched new nomad cluster instance %s" "${name}"
+        failure "Error encountered launching cluster instance %s" "${name}"
+    # Wait for the instance to actually be available. This will
+    # be instantly for containers, and a slight delay for vms
+    while ! incus exec "${name}" /bin/true > /dev/null 2>&1; do
+        sleep 0.1
+    done
+    # The helper scripts will fail to execute from the /cluster
+    # directory on vms, so just drop them directly in the instance
+    incus exec "${name}" -- mkdir /helpers ||
+        failure "Failed to create helpers directory on %s" "${name}"
+
+    for helper in "${HELPER_SCRIPTS[@]}"; do
+        incus exec "${name}" -- cp "/cluster/helpers/${helper}" "/helpers/${helper}" ||
+        failure "Failed to copy %s to %s" "${helper}" "${name}"
+    done
+
+    install-bins "${name}"
+
+    success "Launched new cluster instance %s" "${name}"
 }
 
 # Fully launch a nomad server instance
@@ -39,7 +58,7 @@ function launch-nomad-server-instance() {
     local count="${2?Count of servers required}"
     local consul_enabled="${3}"
 
-    create-nomad-instance "${name}" || exit
+    create-cluster-instance "${name}" || exit
     configure-nomad-server "${name}" "${count}" || exit
     if [ -n "${consul_enabled}" ]; then
         consul-enable "${name}" || exit
@@ -60,7 +79,7 @@ function launch-nomad-client-instance() {
     fi
     local consul_enabled="${2}"
 
-    create-nomad-instance "${name}" || exit
+    create-cluster-instance "${name}" || exit
     configure-nomad-client "${name}" || exit
     if [ -n "${consul_enabled}" ]; then
         consul-enable "${name}" || exit
@@ -69,21 +88,6 @@ function launch-nomad-client-instance() {
     fi
 
     start-service "${name}" "nomad-client" || exit
-}
-
-# Create a new consul instance
-#
-# $1 - Name of instance
-function create-consul-instance() {
-    local name="${1?Name for instance required}"
-    if [[ "${name}" != "${NOMAD_INSTANCE_PREFIX}"* ]]; then
-        name="${NOMAD_INSTANCE_PREFIX}${name}"
-    fi
-
-    info "Launching consul cluster instance %s..." "${name}"
-    incus launch "${LAUNCH_ARGS[@]}" "${name}" > /dev/null ||
-        failure "Error encountered launching consul cluster instance %s" "${name}"
-    success "Launched new consul cluster instance %s" "${name}"
 }
 
 # Configure an instance for consul server and start the service
@@ -107,11 +111,11 @@ function configure-consul-server() {
 
     incus exec "${name}" -- mkdir -p /etc/consul/config.d ||
         failure "Could not create consul configuration directory on %s" "${name}"
-    incus exec "${name}" -- /cluster/helpers/sed-helper "s/%NUM%/${count}/" /cluster/config/consul/server/config.hcl /etc/consul/config.d/00-server.hcl ||
+    incus exec "${name}" -- /helpers/sed-helper "s/%NUM%/${count}/" /cluster/config/consul/server/config.hcl /etc/consul/config.d/00-server.hcl ||
         failure "Could not install consul server configuration on %s" "${name}"
-    incus exec "${name}" -- /cluster/helpers/sed-helper "s|%GOSSIP_KEY%|${gossip_key}|" /cluster/config/consul/config.hcl /tmp/consul.hcl ||
+    incus exec "${name}" -- /helpers/sed-helper "s|%GOSSIP_KEY%|${gossip_key}|" /cluster/config/consul/config.hcl /tmp/consul.hcl ||
         failure "Could not modify consul configuration on %s" "${name}"
-    incus exec "${name}" -- /cluster/helpers/sed-helper "s/%ADDR%/${addr}/" /tmp/consul.hcl /etc/consul/config.d/01-consul.hcl ||
+    incus exec "${name}" -- /helpers/sed-helper "s/%ADDR%/${addr}/" /tmp/consul.hcl /etc/consul/config.d/01-consul.hcl ||
         failure "Could not modify consul join configuration on %s" "${name}"
 
     files=(./config/consul/server/*.hcl)
@@ -119,7 +123,7 @@ function configure-consul-server() {
         info "Installing custom consul server configuration files on %s..." "${name}"
         for cfg in "${files[@]}"; do
             slim_name="$(basename "${cfg}")"
-            printf "    -> adding config file - %s to %s\n" "${cfg}" "${name}"
+            printf "  • adding config file - %s to %s\n" "${cfg}" "${name}"
             incus file push "${cfg}" "${name}/etc/nomad/config.d/99-${slim_name}" > /dev/null ||
                 failure "Error pushing consul server configuration file (%s) into %s" "${slim_name}" "${name}"
         done
@@ -147,7 +151,7 @@ function configure-nomad-server() {
         failure "Could not create nomad config directory on %s" "${instance}"
     incus exec "${instance}" -- cp /cluster/config/nomad/config.hcl /etc/nomad/config.d/00-config.hcl ||
         failure "Could not install base nomad configuration on %s" "${instance}"
-    incus exec "${instance}" -- /cluster/helpers/sed-helper "s/%NUM_SERVERS%/${count}/" /cluster/config/nomad/server/config.hcl /etc/nomad/config.d/01-server.hcl ||
+    incus exec "${instance}" -- /helpers/sed-helper "s/%NUM_SERVERS%/${count}/" /cluster/config/nomad/server/config.hcl /etc/nomad/config.d/01-server.hcl ||
         failure "Could not modify nomad server configuration %s" "${instance}"
 
     files=(./config/nomad/server/*.hcl)
@@ -155,14 +159,14 @@ function configure-nomad-server() {
         info "Installing custom nomad configuration files on %s..." "${instance}"
         for cfg in "${files[@]}"; do
             slim_name="$(basename "${cfg}")"
-            printf "    -> adding config file - %s to %s\n" "${cfg}" "${instance}"
+            printf "  • adding config file - %s to %s\n" "${cfg}" "${instance}"
             incus file push "${cfg}" "${name}/etc/nomad/config.d/99-${slim_name}" > /dev/null ||
                 failure "Error pushing nomad configuration file (%s) into %s" "${slim_name}" "${instance}"
         done
     fi
 
     info "Installing nomad systemd unit file into %s" "${instance}"
-    incus exec "${instance}" -- /cluster/helpers/sed-helper "s/%NOMAD_NAME%/nomad/" /cluster/services/nomad.service /etc/systemd/system/nomad.service ||
+    incus exec "${instance}" -- /helpers/sed-helper "s/%NOMAD_NAME%/nomad/" /cluster/services/nomad.service /etc/systemd/system/nomad.service ||
         failure "Could not install nomad.service unit file into %s" "${instance}"
 
     success "Base server nomad configuration applied to %s" "${instance}"
@@ -189,14 +193,14 @@ function configure-nomad-client() {
         info "Installing custom nomad configuration files on %s..." "${instance}"
         for cfg in "${files[@]}"; do
             slim_name="$(basename "${cfg}")"
-            printf "    -> adding config file - %s to %s\n" "${cfg}" "${instance}"
+            printf "  • adding config file - %s to %s\n" "${cfg}" "${instance}"
             incus file push "${cfg}" "${name}/etc/nomad/config.d/99-${slim_name}" > /dev/null ||
                 failure "Error pushing nomad configuration file (%s) into %s" "${slim_name}" "${instance}"
         done
     fi
 
     info "Installing nomad systemd unit file into %s" "${instance}"
-    incus exec "${instance}" -- /cluster/helpers/sed-helper "s/%NOMAD_NAME%/nomad-client/" /cluster/services/nomad.service /etc/systemd/system/nomad-client.service ||
+    incus exec "${instance}" -- /helpers/sed-helper "s/%NOMAD_NAME%/nomad-client/" /cluster/services/nomad.service /etc/systemd/system/nomad-client.service ||
         failure "Could not install nomad-client.service unit file into %s" "${instance}"
 
     success "Base client nomad configuration applied to %s" "${instance}"
@@ -212,7 +216,7 @@ function server-nomad-discovery() {
     local addr
     addr="$(get-instance-address "server0")" || exit
 
-    incus exec "${instance}" -- /cluster/helpers/sed-helper "s/%ADDR%/${addr}/" /cluster/config/nomad/server/server_join.hcl /etc/nomad/config.d/01-join.hcl ||
+    incus exec "${instance}" -- /helpers/sed-helper "s/%ADDR%/${addr}/" /cluster/config/nomad/server/server_join.hcl /etc/nomad/config.d/01-join.hcl ||
         failure "Could not install nomad discovery configuration into %s" "${instance}"
 
     success "Enabled nomad server discovery on %s" "${instance}"
@@ -228,7 +232,7 @@ function client-nomad-discovery() {
     local addr
     addr="$(get-instance-address "server0")" || exit
 
-    incus exec "${instance}" -- /cluster/helpers/sed-helper "s/%ADDR%/${addr}/" /cluster/config/nomad/client/server_join.hcl /etc/nomad/config.d/01-join.hcl ||
+    incus exec "${instance}" -- /helpers/sed-helper "s/%ADDR%/${addr}/" /cluster/config/nomad/client/server_join.hcl /etc/nomad/config.d/01-join.hcl ||
         failure "Could not install nomad discovery configuration into %s" "${instance}"
 
     success "Enabled nomad server discovery on %s" "${instance}"
@@ -287,9 +291,9 @@ function consul-enable() {
     info "Enabling consul on %s" "${instance}"
     incus exec "${instance}" -- mkdir -p /etc/consul/config.d ||
         failure "Could not create consul agent configuration directory on %s" "${instance}"
-    incus exec "${instance}" -- /cluster/helpers/sed-helper "s|%GOSSIP_KEY%|${gossip_key}|" /cluster/config/consul/config.hcl /tmp/consul.hcl ||
+    incus exec "${instance}" -- /helpers/sed-helper "s|%GOSSIP_KEY%|${gossip_key}|" /cluster/config/consul/config.hcl /tmp/consul.hcl ||
         failure "Could not modify consul configuration on %s" "${instance}"
-    incus exec "${instance}" -- /cluster/helpers/sed-helper "s/%ADDR%/${addr}/" /tmp/consul.hcl /etc/consul/config.d/01-consul.hcl ||
+    incus exec "${instance}" -- /helpers/sed-helper "s/%ADDR%/${addr}/" /tmp/consul.hcl /etc/consul/config.d/01-consul.hcl ||
         failure "Could not modify consul join configuration on %s" "${instance}"
 
     info "Installing consul systemd unit file into %s" "${instance}"
@@ -358,16 +362,19 @@ function reconfigure-nomad() {
         failure "No custom configuration found to apply - %s" "${instance}"
     fi
 
+    # Reinstall bins in case they have changed
+    install-bins "${name}" || exit
+
     info "Reconfiguring nomad on %s" "${instance}"
     # Start with deleting any existing custom configs
-    incus exec "${instance}" -- /cluster/helpers/config-scrub ||
+    incus exec "${instance}" -- /helpers/config-scrub ||
         failure "Unable to remove existing nomad configuration on %s" "${instance}"
 
     # Now copy in custom configs
     local slim_name
     for cfg in "${confs[@]}"; do
         slim_name="$(basename "${cfg}")"
-        printf "    -> adding config file - %s to %s\n" "${cfg}" "${instance}"
+        printf "  • adding config file - %s to %s\n" "${cfg}" "${instance}"
         incus file push "${cfg}" "${instance}/etc/nomad/config.d/99-${slim_name}" > /dev/null ||
             failure "Error pushing nomad configuration file (%s) into %s" "${slim_name}" "${instance}"
     done
@@ -425,6 +432,18 @@ function restart-nomad() {
         if [[ "${instance}" == *"client"* ]]; then
             nids+=("$(name-to-node "${instance}")") || exit
         fi
+    done
+
+    # Install bins in case they have changed
+    local pids=()
+    for instance in "${names[@]}"; do
+        install-bins "${name}" &
+        pids+=("${!}")
+    done
+
+    local pid
+    for pid in "${pids[@]}"; do
+        wait "${pid}" || exit
     done
 
     # Trigger restarts
@@ -491,7 +510,7 @@ function stream-logs() {
         *"consul"*) service_name="consul" ;;
     esac
 
-    incus exec "${instance}" -- /cluster/helpers/stream-log "${service_name}"
+    incus exec "${instance}" -- /helpers/stream-log "${service_name}"
 }
 
 # Helpers
@@ -606,11 +625,33 @@ function get-instance-address() {
     fi
 
     local address
-    address="$(incus list "${instance}" --format json | jq -r '.[].state.network.eth0.addresses[] | select(.family == "inet") | .address')"
+    address="$(incus list "${instance}" --format json | jq -r '.[].state.network.[] | select(.type == "broadcast") | .addresses[] | select(.family == "inet") | .address')"
     if [ -z "${address}" ]; then
         failure "Could not determine address for instance %s" "${instance}"
     fi
     printf "%s" "${address}"
+}
+
+# Install files from the nomad bin directory
+# into the instance
+#
+# $1 - Name of instance
+function install-bins() {
+    local name="${1?Name of server required}"
+    local instance bins bin
+    instance="$(name-to-instance "${name}")" || exit
+
+    incus exec "${instance}" -- mkdir -p /cluster-bins ||
+        failure "Could not create cluster-bins directory on %s" "${instance}"
+    mapfile -t bins <<< "$(incus exec "${instance}" -- ls /nomad/bin)" ||
+        failure "Could not read available bins to install on %s" "${instance}"
+    for bin in "${bins[@]}"; do
+        # need to ensure the path is clear if the bin already
+        # exists and is in use
+        incus exec "${instance}" -- rm -f "/cluster-bins/${bin}"
+        incus exec "${instance}" -- cp "/nomad/bin/${bin}" "/cluster-bins/${bin}" ||
+            failure "Could not install %s on %s" "${bin}" "${instance}"
+    done
 }
 
 # Get address for nomad node ID
