@@ -437,7 +437,7 @@ function restart-nomad() {
     # Install bins in case they have changed
     local pids=()
     for instance in "${names[@]}"; do
-        install-bins "${name}" &
+        install-bins "${instance}" &
         pids+=("${!}")
     done
 
