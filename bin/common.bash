@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 DIR_SHA="$(pwd | sha256sum)"
 export DIR_SHA="${DIR_SHA:0:6}"
+export CLUSTER_CACHER_INSTANCE="nomad-cluster-cacher"
 export NOMAD_INSTANCE_PREFIX="nomad-cluster-${DIR_SHA}-"
 export ENVRC_HEADER="### cluster header ###"
 export PROFILE_NAME="cluster-hack"
@@ -21,7 +22,12 @@ HELPER_SCRIPTS=("config-scrub" "sed-helper" "stream-log")
 # $1 - Name of instance
 function create-cluster-instance() {
     local name="${1?Name for instance required}"
-    if [[ "${name}" != "${NOMAD_INSTANCE_PREFIX}"* ]]; then
+    local raw="${2}"
+    if [ -n "${raw}" ] && [ "${raw}" != "raw" ]; then
+        failure "Unknown argument provided for instance creation - %s" "${raw}"
+    fi
+
+    if [ -z "${raw}" ] && [[ "${name}" != "${NOMAD_INSTANCE_PREFIX}"* ]]; then
         name="${NOMAD_INSTANCE_PREFIX}${name}"
     fi
 
@@ -33,19 +39,45 @@ function create-cluster-instance() {
     while ! incus exec "${name}" /bin/true > /dev/null 2>&1; do
         sleep 0.1
     done
-    # The helper scripts will fail to execute from the /cluster
-    # directory on vms, so just drop them directly in the instance
-    incus exec "${name}" -- mkdir /helpers ||
-        failure "Failed to create helpers directory on %s" "${name}"
 
-    for helper in "${HELPER_SCRIPTS[@]}"; do
-        incus exec "${name}" -- cp "/cluster/helpers/${helper}" "/helpers/${helper}" ||
-        failure "Failed to copy %s to %s" "${helper}" "${name}"
-    done
+    if [ -z "${raw}" ]; then
+        # The helper scripts will fail to execute from the /cluster
+        # directory on vms, so just drop them directly in the instance
+        incus exec "${name}" -- mkdir /helpers ||
+            failure "Failed to create helpers directory on %s" "${name}"
 
-    install-bins "${name}"
+        for helper in "${HELPER_SCRIPTS[@]}"; do
+            incus exec "${name}" -- cp "/cluster/helpers/${helper}" "/helpers/${helper}" ||
+                failure "Failed to copy %s to %s" "${helper}" "${name}"
+        done
+
+        install-bins "${name}"
+
+        if cluster-cacher-exists; then
+            cacher-enable "${name}"
+        fi
+    fi
 
     success "Launched new cluster instance %s" "${name}"
+}
+
+# Check if the global apt cacher exists
+function cluster-cacher-exists() {
+    incus info "${CLUSTER_CACHER_INSTANCE}" > /dev/null 2>&1
+}
+
+# Launch the global apt cacher
+function launch-cluster-cacher-instance() {
+    # Check first if the instance exists
+    if cluster-cacher-exists; then
+        return
+    fi
+
+    info "Launching global cluster apt cacher..."
+    create-cluster-instance "${CLUSTER_CACHER_INSTANCE}" "raw" || exit
+    incus exec "${CLUSTER_CACHER_INSTANCE}" -- apt-get install -yq apt-cacher-ng ||
+        failure "Could not install apt-cacher-ng package on %s" "${CLUSTER_CACHER_INSTANCE}"
+    success "Launched new global cluster apt cacher %s" "${CLUSTER_CACHER_INSTANCE}"
 }
 
 # Fully launch a nomad server instance
@@ -267,12 +299,8 @@ function consul-gossip-key() {
 # Get the address of the consul server. This is always
 # just the first created consul server.
 function consul-address() {
-    instance="$(name-to-instance "consul0")" || exit
     local address
-    address="$(incus list "${instance}" --format json | jq -r '.[].state.network.eth0.addresses[] | select(.family == "inet") | .address')"
-    if [ -z "${address}" ]; then
-        failure "Could not determine address for instance %s" "${instance}"
-    fi
+    address="$(get-instance-address "consul0")" || exit
     printf "%s" "${address}"
 }
 
@@ -300,6 +328,29 @@ function consul-enable() {
     incus exec "${instance}" -- cp /cluster/services/consul.service /etc/systemd/system/consul.service ||
         failure "Could not install consul.service unit file into %s" "${instance}"
     start-service "${instance}" "consul"
+}
+
+# Get the address of the global apt cacher
+function cacher-address() {
+    local address
+    address="$(incus list "${CLUSTER_CACHER_INSTANCE}" --format json | jq -r '.[].state.network.[] | select(.type == "broadcast") | .addresses[] | select(.family == "inet") | .address')" ||
+        failure "Could not get address for global cluster cacher"
+    printf "%s" "${address}"
+}
+
+# Enable apt cacher on instance
+#
+# $1 - Name of instance
+function cacher-enable() {
+    local name="${1?Name of instance required}"
+    local instance
+    instance="$(name-to-instance "${name}")" || exit
+    local addr
+    addr="$(cacher-address)" || exit
+
+    info "Enabling apt cacher on %s" "${instance}"
+    incus exec "${instance}" -- sh -c "echo 'Acquire::http { Proxy \"http://${addr}:3142\"; }' > /etc/apt/apt.conf.d/99proxy" ||
+        failure "Could not enable apt cacher on %s" "${instance}"
 }
 
 # Enable and start service on instance
@@ -330,8 +381,15 @@ function start-service() {
 # $1 - Name of instance
 function delete-instance() {
     local name="${1?Name is required}"
-    local instance
-    instance="$(name-to-instance "${name}")" || exit
+    local raw="${2}"
+    if [ -n "${raw}" ] && [ "${raw}" != "raw" ]; then
+        failure "Unknown argument provided for instance deletion - %s" "${raw}"
+    fi
+
+    local instance="${name}"
+    if [ -z "${raw}" ]; then
+        instance="$(name-to-instance "${name}")" || exit
+    fi
 
     info "Destroying nomad cluster instance %s" "${instance}"
     incus stop "${instance}" --force ||
@@ -660,6 +718,7 @@ function install-bins() {
 function get-node-address() {
     local node_id="${1?Nomad node ID required}"
     local address
+    # TODO: this needs to be fixed to remove static device name
     address="$(nomad node status -json "${node_id}" | jq -r '.NodeResources.Networks[] | select(.Device == \"eth0\") | .IP')"
     if [ -z "${address}" ]; then
         failure "Could not determine address for node %s" "${node_id}"

@@ -7,11 +7,30 @@ root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
 . "${root}/common.bash" || exit 1
 
 for arg in "${@}"; do
-    if [ "${arg}" == "-h" ] || [ "${arg}" == "--help" ]; then
-        printf "Usage: %s [INSTANCE_NAME [INSTANCE_NAME...]]\n" "${SCRIPT_NAME}"
-        exit 1
-    fi
+    shift
+    case "${arg}" in
+        "--cacher") set -- "${@}" "-C" ;;
+        "--help") set -- "${@}" "-h" ;;
+        *) set -- "${@}" "${arg}" ;;
+    esac
 done
+
+while getopts "hC" opt; do
+    case "${opt}" in
+        "C") cacher="1" ;;
+        "h") help="1" ;;
+        *) help="1" ;;
+    esac
+done
+
+if [ -n "${help}" ]; then
+    printf "Usage: %s [options ][INSTANCE_NAME [INSTANCE_NAME...]]\n" "${SCRIPT_NAME}"
+    printf "\t--cacher, -C\tDestroy global apt cacher\n"
+fi
+
+if [ -n "${cacher}" ] && cluster-cacher-exists; then
+    delete-instance "${CLUSTER_CACHER_INSTANCE}"
+fi
 
 cluster-must-exist
 

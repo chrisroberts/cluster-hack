@@ -9,8 +9,9 @@ cpus="1"
 image="ubuntu/noble"
 consul="0"
 vm=""
+cacher=""
 
-for arg in "$@"; do
+for arg in "${@}"; do
     shift
     case "${arg}" in
         "--servers") set -- "${@}" "-s" ;;
@@ -20,12 +21,13 @@ for arg in "$@"; do
         "--image") set -- "${@}" "-i" ;;
         "--consul") set -- "${@}" "-o" ;;
         "--vm") set -- "${@}" "-v" ;;
+        "--cacher") set -- "${@}" "-A" ;;
         "--help") set -- "${@}" "-h" ;;
         *) set -- "${@}" "${arg}" ;;
     esac
 done
 
-while getopts "hc:s:m:C:i:o:v" opt; do
+while getopts "hc:s:m:C:i:o:vA" opt; do
     case "${opt}" in
         "c") clients="${OPTARG}" ;;
         "s") servers="${OPTARG}" ;;
@@ -34,6 +36,7 @@ while getopts "hc:s:m:C:i:o:v" opt; do
         "i") image="${OPTARG}" ;;
         "o") consul="${OPTARG}" ;;
         "v") vm="1" ;;
+        "A") cacher="1" ;;
         "h") help="1" ;;
         *) help="1" ;;
     esac
@@ -61,6 +64,7 @@ if [ -n "${help}" ]; then
     printf "\t--image NAME, -i NAME\tImage for instances\n"
     printf "\t--consul NUM, -o NUM\tEnable consul with number of servers (3 minimum)\n"
     printf "\t--vm, -v\t\tUse virtual machine instances\n"
+    printf "\t--cacher, -A\t\tEnable global apt cacher\n"
     exit 1
 fi
 
@@ -81,6 +85,10 @@ if [ -n "${consul_enabled}" ] && [ "${consul}" -lt "3" ]; then
 fi
 
 cluster-must-not-exist
+
+if [ -n "${cacher}" ]; then
+    launch-cluster-cacher-instance
+fi
 
 if [ -n "${consul_enabled}" ]; then
     info "Creating new consul cluster - %d servers..." "${consul}"

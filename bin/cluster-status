@@ -31,6 +31,13 @@ done
 printf "Current Cluster Status (%b%s%b)\n\n" "${TEXT_YELLOW}" "${DIR_SHA}" "${TEXT_CLEAR}"
 printf "» Nomad servers: %d instances\n" "${servers}"
 printf "» Nomad clients: %d instances\n" "${clients}"
+
+if cluster-cacher-exists; then
+    printf "%b•%b cacher: %benabled%b\n" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${TEXT_GREEN}" "${TEXT_CLEAR}"
+else
+    printf "%b•%b cacher: %bdisabled%b\n" "${TEXT_RED}" "${TEXT_CLEAR}" "${TEXT_RED}" "${TEXT_CLEAR}"
+fi
+
 if [ "${consuls}" -gt "0" ]; then
     printf "%b•%b consul: %benabled%b (%d servers)\n" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${consuls}"
 else
