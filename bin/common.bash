@@ -376,6 +376,69 @@ function start-service() {
     success "Service %s has been started on %s" "${service}" "${instance}"
 }
 
+# Pause an instance
+#
+# $1 - Name of instance
+function pause-instance() {
+    local name="${1?Name of instance is required}"
+    local instance
+    instance="$(name-to-instance "${name}")" || exit
+
+    local status
+    status="$(status-instance "${instance}")" || exit
+
+    if [ "${status}" != "running" ]; then
+        failure "Cannot pause %s in current state (%s)" "${instance}" "${status}"
+    fi
+
+    info "Pausing instance %s" "${instance}"
+    incus pause "${instance}" ||
+        failure "Unable to pause %s" "${instance}"
+}
+
+# Resume an instance
+#
+# $1 - Name of instance
+function resume-instance() {
+    local name="${1?Name of instance is required}"
+    local instance
+    instance="$(name-to-instance "${name}")" || exit
+
+    local status
+    status="$(status-instance "${instance}")" || exit
+
+    if [ "${status}" != "frozen" ]; then
+        failure "Cannot resume %s in current state (%s)" "${instance}" "${status}"
+    fi
+
+    info "Resuming instance %s" "${instance}"
+    incus resume "${instance}" ||
+        failure "Unable to pause %s" "${instance}"
+    success "Instance has been resumed %s" "${instance}"
+}
+
+# Get status of an instance
+#
+# $1 - Name of instance
+function status-instance() {
+    local name="${1?Name is required}"
+    instance="$(name-to-instance "${name}")" || exit
+
+    local info
+    info="$(incus list ${instance} --format json)" ||
+        failure "Could not get info for %s" "${instance}"
+    info="$(printf "%s" "${info}" | jq -r '.[].status')" ||
+        failure "Could not process info for %s" "${instance}"
+    if [ -z "${info}" ]; then
+        failre "Could not get status for instance %s" "${instance}"
+    fi
+
+    info="$(printf "%s" "${info}" | awk '{print tolower($0)}')" ||
+        failure "Could not format status for instance %s" "${instance}"
+
+    printf "%s" "${info}"
+}
+
 # Delete an instance
 #
 # $1 - Name of instance
