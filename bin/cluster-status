@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Summary: show status of current cluster
 
 csource="${BASH_SOURCE[0]}"
 while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
@@ -14,23 +15,84 @@ servers="0"
 clients="0"
 consuls="0"
 
+servers_running="0"
+clients_running="0"
+consuls_running="0"
+
+servers_stopped="0"
+clients_stopped="0"
+consuls_stopped="0"
+
+servers_paused="0"
+clients_paused="0"
+consuls_paused="0"
+
 for instance in "${list[@]}"; do
+    state="$(status-instance "${instance}")" || exit
     case "${instance}" in
         *"server"*)
             ((servers++))
+            case "${state}" in
+                "running") ((servers_running++)) ;;
+                "stopped") ((servers_stopped++)) ;;
+                "frozen") ((servers_paused++)) ;;
+            esac
             ;;
         *"client"*)
             ((clients++))
+            case "${state}" in
+                "running") ((clients_running++)) ;;
+                "stopped") ((clients_stopped++)) ;;
+                "frozen") ((clients_paused++)) ;;
+            esac
             ;;
         *"consul"*)
             ((consuls++))
+            case "${state}" in
+                "running") ((consuls_running++)) ;;
+                "stopped") ((consuls_stopped++)) ;;
+                "frozen") ((consuls_paused++)) ;;
+            esac
             ;;
     esac
 done
 
+srv_stat=()
+if [ "${servers_running}" -gt "0" ]; then
+    srv_stat+=("$(printf "(%d %brunning%b)" "${servers_running}" "${TEXT_GREEN}" "${TEXT_CLEAR}")")
+fi
+if [ "${servers_stopped}" -gt "0" ]; then
+    srv_stat+=("$(printf "(%d %bstopped%b)" "${servers_stopped}" "${TEXT_RED}" "${TEXT_CLEAR}")")
+fi
+if [ "${servers_paused}" -gt "0" ]; then
+    srv_stat+=("$(printf "(%d %bpaused%b)" "${servers_paused}" "${TEXT_YELLOW}" "${TEXT_CLEAR}")")
+fi
+
+clnt_stat=()
+if [ "${clients_running}" -gt "0" ]; then
+    clnt_stat+=("$(printf "(%d %brunning%b)" "${clients_running}" "${TEXT_GREEN}" "${TEXT_CLEAR}")")
+fi
+if [ "${clients_stopped}" -gt "0" ]; then
+    clnt_stat+=("$(printf "(%d %bstopped%b)" "${clients_stopped}" "${TEXT_RED}" "${TEXT_CLEAR}")")
+fi
+if [ "${clients_paused}" -gt "0" ]; then
+    clnt_stat+=("$(printf "(%d %bpaused%b)" "${clients_paused}" "${TEXT_YELLOW}" "${TEXT_CLEAR}")")
+fi
+
+cnsl_stat=()
+if [ "${consuls_running}" -gt "0" ]; then
+    cnsl_stat+=("$(printf "(%d %brunning%b)" "${consuls_running}" "${TEXT_GREEN}" "${TEXT_CLEAR}")")
+fi
+if [ "${consuls_stopped}" -gt "0" ]; then
+    cnsl_stat+=("$(printf "(%d %bstopped%b)" "${consuls_stopped}" "${TEXT_RED}" "${TEXT_CLEAR}")")
+fi
+if [ "${consuls_paused}" -gt "0" ]; then
+    cnsl_stat+=("$(printf "(%d %bpaused%b)" "${consuls_paused}" "${TEXT_YELLOW}" "${TEXT_CLEAR}")")
+fi
+
 printf "Current Cluster Status (%b%s%b)\n\n" "${TEXT_YELLOW}" "${DIR_SHA}" "${TEXT_CLEAR}"
-printf "» Nomad servers: %d instances\n" "${servers}"
-printf "» Nomad clients: %d instances\n" "${clients}"
+printf "» Nomad servers: %d instances %s\n" "${servers}" "${srv_stat[*]}"
+printf "» Nomad clients: %d instances %s\n" "${clients}" "${clnt_stat[*]}"
 
 if cluster-cacher-exists; then
     printf "%b•%b cacher: %benabled%b\n" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${TEXT_GREEN}" "${TEXT_CLEAR}"
@@ -39,7 +101,8 @@ else
 fi
 
 if [ "${consuls}" -gt "0" ]; then
-    printf "%b•%b consul: %benabled%b (%d servers)\n" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${consuls}"
+    printf "%b•%b consul: %benabled%b (%d servers) %s\n" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${TEXT_GREEN}" "${TEXT_CLEAR}" \
+        "${consuls}" "${cnsl_stat[*]}"
 else
     printf "%b•%b consul: %bdisabled%b\n" "${TEXT_RED}" "${TEXT_CLEAR}" "${TEXT_RED}" "${TEXT_CLEAR}"
 fi

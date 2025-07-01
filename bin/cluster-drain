@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Summary: drain nomad jobs from cluster instance(s)
 
 csource="${BASH_SOURCE[0]}"
 while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done

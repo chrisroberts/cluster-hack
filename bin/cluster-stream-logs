@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Summary: stream logs from cluster instances
 
 csource="${BASH_SOURCE[0]}"
 while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done

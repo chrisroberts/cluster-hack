@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Summary: connect to instance within cluster
 
 csource="${BASH_SOURCE[0]}"
 while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Summary: destroy existing cluster
 
 csource="${BASH_SOURCE[0]}"
 while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
@@ -26,6 +27,7 @@ done
 if [ -n "${help}" ]; then
     printf "Usage: %s [options ][INSTANCE_NAME [INSTANCE_NAME...]]\n" "${SCRIPT_NAME}"
     printf "\t--cacher, -C\tDestroy global apt cacher\n"
+    exit 1
 fi
 
 if [ -n "${cacher}" ] && cluster-cacher-exists; then
