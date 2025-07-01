@@ -101,7 +101,7 @@ if [ -n "${consul_enabled}" ]; then
     # Now create the rest
     pids=()
     for ((idx=1; idx<"${consul}"; idx++)); do
-        create-consul-instance "consul${idx}" &
+        create-cluster-instance "consul${idx}" &
         pids+=("${!}")
     done
     result=""
