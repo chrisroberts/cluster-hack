@@ -101,7 +101,7 @@ if [ -n "${consul_enabled}" ]; then
     # Now create the rest
     pids=()
     for ((idx=1; idx<"${consul}"; idx++)); do
-        launch-consul-instance "consul${idx}" "${consul}" &
+        launch-consul-server-instance "consul${idx}" "${consul}" &
         pids+=("${!}")
     done
     result=""
@@ -133,7 +133,7 @@ fi
 
 pids=()
 for ((idx="${start_idx}"; idx<"${servers}"; idx++)); do
-    launch-nomad-server-instance "server${idx}" "${servers}" "${consul_enabled}" &
+    launch-nomad-server-instance "server${idx}" "${servers}" &
     pids+=("${!}")
 done
 result=""
@@ -152,7 +152,7 @@ info "Setting up nomad client instances..."
 
 pids=()
 for ((idx="0"; idx<"${clients}"; idx++)); do
-    launch-nomad-client-instance "client${idx}" "${consul_enabled}" &
+    launch-nomad-client-instance "client${idx}" &
     pids+=("${!}")
 done
 
@@ -208,8 +208,7 @@ while true; do
 done
 
 if [ -n "${consul_enabled}" ]; then
-    success "Cluster creation complete - %s servers / %s clients" "${servers}" "${clients}"
-    success "         consul enabled (%d servers)" "${consul}"
+    success "Cluster creation complete - %s servers / %s clients (consul enabled)" "${servers}" "${clients}"
 else
     success "Cluster creation complete - %s servers / %s clients" "${servers}" "${clients}"
 fi

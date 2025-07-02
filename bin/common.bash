@@ -84,15 +84,13 @@ function launch-cluster-cacher-instance() {
 #
 # $1 - Name of instance
 # $2 - Expected count of servers
-# $3 - Consul is enabled
 function launch-nomad-server-instance() {
     local name="${1?Name for server is required}"
     local count="${2?Count of servers required}"
-    local consul_enabled="${3}"
 
     create-cluster-instance "${name}" || exit
     configure-nomad-server "${name}" "${count}" || exit
-    if [ -n "${consul_enabled}" ]; then
+    if is-consul-enabled; then
         consul-enable "${name}" || exit
     else
         server-nomad-discovery "${name}" || exit
@@ -103,17 +101,15 @@ function launch-nomad-server-instance() {
 # Fully launch a nomad client instance
 #
 # $1 - Name of instance
-# $2 - Consul is enabled
 function launch-nomad-client-instance() {
     local name="${1?Name for client is required}"
     if [[ "${name}" != "${NOMAD_INSTANCE_PREFIX}"* ]]; then
         name="${NOMAD_INSTANCE_PREFIX}${name}"
     fi
-    local consul_enabled="${2}"
 
     create-cluster-instance "${name}" || exit
     configure-nomad-client "${name}" || exit
-    if [ -n "${consul_enabled}" ]; then
+    if is-consul-enabled; then
         consul-enable "${name}" || exit
     else
         client-nomad-discovery "${name}" || exit
@@ -126,7 +122,7 @@ function launch-nomad-client-instance() {
 #
 # $1 - Name of instance
 # $2 - Count of servers
-function launch-consul-server() {
+function launch-consul-server-instance() {
     local name="${1?Name of server required}"
     local count="${2?Count of servers required}"
 
@@ -209,7 +205,7 @@ function configure-nomad-server() {
         for cfg in "${files[@]}"; do
             slim_name="$(basename "${cfg}")"
             printf "  • adding config file - %s to %s\n" "${cfg}" "${instance}"
-            incus file push "${cfg}" "${name}/etc/nomad/config.d/99-${slim_name}" > /dev/null ||
+            incus file push "${cfg}" "${instance}/etc/nomad/config.d/99-${slim_name}" > /dev/null ||
                 failure "Error pushing nomad configuration file (%s) into %s" "${slim_name}" "${instance}"
         done
     fi
@@ -243,7 +239,7 @@ function configure-nomad-client() {
         for cfg in "${files[@]}"; do
             slim_name="$(basename "${cfg}")"
             printf "  • adding config file - %s to %s\n" "${cfg}" "${instance}"
-            incus file push "${cfg}" "${name}/etc/nomad/config.d/99-${slim_name}" > /dev/null ||
+            incus file push "${cfg}" "${instance}/etc/nomad/config.d/99-${slim_name}" > /dev/null ||
                 failure "Error pushing nomad configuration file (%s) into %s" "${slim_name}" "${instance}"
         done
     fi
@@ -303,6 +299,14 @@ function client-nomad-discovery() {
         failure "Could not install nomad discovery configuration into %s" "${instance}"
 
     success "Enabled nomad server discovery on %s" "${instance}"
+}
+
+# Checks if consul is enabled in the cluster
+function is-consul-enabled() {
+    if ! get-instance-of "consul" > /dev/null 2>&1; then
+        return 1
+    fi
+    return 0
 }
 
 # Generate and store consul encryption key. This

@@ -90,7 +90,7 @@ pids=()
 if [ "${consul}" -gt "0" ]; then
     info "Adding %d new consul server instances..."
     for ((idx=0; idx<"${consul}"; idx++)); do
-        launch-consul-instance "consul-${ident}${idx}" "3" &
+        launch-consul-server-instance "consul-${ident}${idx}" "3" &
         pids+=("${!}")
     done
 fi
