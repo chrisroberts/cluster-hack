@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Summary: pause the cluster
+# Summary: pause instances or entire cluster
 
 csource="${BASH_SOURCE[0]}"
 while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
@@ -8,22 +8,63 @@ root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
 . "${root}/common.bash" || exit 1
 
 for arg in "${@}"; do
-    if [ "${arg}" == "-h" ] || [ "${arg}" == "--help" ]; then
-        help="1"
-    fi
+    shift
+    case "${arg}" in
+        "--servers") set -- "${@}" "-s" ;;
+        "--clients") set -- "${@}" "-c" ;;
+        "--consuls") set -- "${@}" "-o" ;;
+        "--help") set -- "${@}" "-h" ;;
+        *) set -- "${@}" "${arg}" ;;
+    esac
 done
 
+while getopts "hcso" opt; do
+    case "${opt}" in
+        "c") clients="1" ;;
+        "s") servers="1" ;;
+        "o") consuls="1" ;;
+        "h") help="1" ;;
+        *) help="1" ;;
+    esac
+done
+shift $((OPTIND-1))
+
 if [ -n "${help}" ]; then
-    printf "Usage: %s\n" "${SCRIPT_NAME}"
+    printf "Usage: %s [options] [INSTANCE_NAME][ INSTANCE_NAME...]\n" "${SCRIPT_NAME}"
+    printf "\t--servers, -s\tPause all server instances\n"
+    printf "\t--clients, -c\tPause all client instnaces\n"
+    printf "\t--consuls, -c\tPause all consul instances\n"
     exit 1
 fi
 
 cluster-must-exist
 
-instance_list="$(get-instances)" || exit
-readarray -t instances < <(printf "%s" "${instance_list}")
+instances=()
+instances+=("${@}")
 
-info "Pausing cluster..."
+if [ -n "${servers}" ]; then
+    readarray -t list < <(get-instances "server")
+    instances+=("${list[@]}")
+fi
+
+if [ -n "${clients}" ]; then
+    readarray -t list < <(get-instances "client")
+    instances+=("${list[@]}")
+fi
+
+if [ -n "${consuls}" ]; then
+    readarray -t list < <(get-instances "consul")
+    instances+=("${list[@]}")
+fi
+
+# If no instances are set then we are pausing
+# the entire cluster
+if [ "${#instances}" == "0" ]; then
+    info "Pausing cluster..."
+    cluster_pause="1"
+    readarray -t list < <(get-instances)
+    instances+=("${list[@]}")
+fi
 
 pids=()
 for instance in "${instances[@]}"; do
@@ -42,4 +83,6 @@ if [ "${result}" == "1" ]; then
     failure "Unexepcted error encountered pausing cluster"
 fi
 
-success "Cluster is paused"
+if [ -n "${cluster_pause}" ]; then
+    success "Cluster is paused"
+fi
