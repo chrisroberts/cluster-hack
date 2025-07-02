@@ -57,7 +57,7 @@ fi
 LAUNCH_ARGS+=("--config" "limits.memory=${memory}" "--config" "limits.cpu=${cpus}" "--ephemeral" "--profile" "${PROFILE_NAME}" "images:${image}")
 
 if [ -n "${help}" ]; then
-    printf "Usage: %s --servers n --clients n\n" "${SCRIPT_NAME}"
+    printf "Usage: %s [options] --servers n --clients n\n" "${SCRIPT_NAME}"
     printf "\t--clients NUM, -c NUM\tNumber of client instances (1 minimum)\n"
     printf "\t--servers NUM, -s NUM\tNumber of server instances (3 minimum)\n"
     printf "\t--cpus NUM, -C NUM\tNumber of CPUs to assign instance (default: 1)\n"
@@ -101,7 +101,7 @@ if [ -n "${consul_enabled}" ]; then
     # Now create the rest
     pids=()
     for ((idx=1; idx<"${consul}"; idx++)); do
-        create-cluster-instance "consul${idx}" &
+        launch-consul-instance "consul${idx}" "${consul}" &
         pids+=("${!}")
     done
     result=""
@@ -111,22 +111,7 @@ if [ -n "${consul_enabled}" ]; then
         fi
     done
     if [ -n "${result}" ]; then
-        failure "Error encountered during consul instance creation"
-    fi
-
-    pids=()
-    for ((idx=1; idx<"${consul}"; idx++)); do
-        configure-consul-server "consul${idx}" "${consul}" &
-        pids+=("${!}")
-    done
-    result=""
-    for pid in "${pids[@]}"; do
-        if ! wait "${pid}"; then
-            result="1"
-        fi
-    done
-    if [ -n "${result}" ]; then
-        failure "Error encountered during consul instance configuration"
+        failure "Error encountered launching consul instances"
     fi
 
     success "Consul cluster creation complete"

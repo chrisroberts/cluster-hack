@@ -122,6 +122,18 @@ function launch-nomad-client-instance() {
     start-service "${name}" "nomad-client" || exit
 }
 
+# Fully launch a consul instance
+#
+# $1 - Name of instance
+# $2 - Count of servers
+function launch-consul-server() {
+    local name="${1?Name of server required}"
+    local count="${2?Count of servers required}"
+
+    create-cluster-instance "${name}" || exit
+    configure-consul-server "${name}" "${count}" || exit
+}
+
 # Configure an instance for consul server and start the service
 #
 # $1 - Name of instance
@@ -134,6 +146,9 @@ function configure-consul-server() {
     if [[ "${name}" != "${NOMAD_INSTANCE_PREFIX}"* ]]; then
         name="${NOMAD_INSTANCE_PREFIX}${name}"
     fi
+
+    # Don't set address on initial server when
+    # creating the cluster
     if [[ "${name}" != *"consul0" ]]; then
         addr="$(consul-address)" || exit
     fi
@@ -149,6 +164,8 @@ function configure-consul-server() {
         failure "Could not modify consul configuration on %s" "${name}"
     incus exec "${name}" -- /helpers/sed-helper "s/%ADDR%/${addr}/" /tmp/consul.hcl /etc/consul/config.d/01-consul.hcl ||
         failure "Could not modify consul join configuration on %s" "${name}"
+    incus exec "${name}" -- sh -c "echo '${gossip_key}' > /.consul-key" ||
+        failure "Could not cache gossip key on %s" "${name}"
 
     files=(./config/consul/server/*.hcl)
     if [ -f "${files[0]}" ]; then
@@ -243,10 +260,11 @@ function configure-nomad-client() {
 # $1 - Name of instance
 function server-nomad-discovery() {
     local name="${1?Name of server required}"
-    local instance
+    local instance srv
     instance="$(name-to-instance "${name}")" || exit
+    srv="$(get-instance-of "server")" || exit
     local addr
-    addr="$(get-instance-address "server0")" || exit
+    addr="$(get-instance-address "${srv}")" || exit
 
     incus exec "${instance}" -- /helpers/sed-helper "s/%ADDR%/${addr}/" /cluster/config/nomad/server/server_join.hcl /etc/nomad/config.d/01-join.hcl ||
         failure "Could not install nomad discovery configuration into %s" "${instance}"
@@ -254,15 +272,32 @@ function server-nomad-discovery() {
     success "Enabled nomad server discovery on %s" "${instance}"
 }
 
+# Get an instance name for the given
+# type. Will be the first availble type
+# in the list.
+#
+# $1 - Type of instance (server, client, consul)
+function get-instance-of() {
+    local type="${1?type of instance is required}"
+    local list instances
+    list="$(get-instances "${type}")" || failure
+    readarray -t instances < <(printf "%s" "${list}")
+    if [ -z "${instances[0]}" ]; then
+        failure "could not locate instance of type - %s" "${type}"
+    fi
+    printf "%s" "${instances[0]}"
+}
+
 # Configure client for nomad based discovery
 #
 # $1 - Name of instance
 function client-nomad-discovery() {
     local name="${1?Name of server required}"
-    local instance
+    local instance srv
     instance="$(name-to-instance "${name}")" || exit
+    srv="$(get-instance-of "server")" || exit
     local addr
-    addr="$(get-instance-address "server0")" || exit
+    addr="$(get-instance-address "${srv}")" || exit
 
     incus exec "${instance}" -- /helpers/sed-helper "s/%ADDR%/${addr}/" /cluster/config/nomad/client/server_join.hcl /etc/nomad/config.d/01-join.hcl ||
         failure "Could not install nomad discovery configuration into %s" "${instance}"
@@ -274,7 +309,7 @@ function client-nomad-discovery() {
 # is always done on the initial server instance.
 function consul-init() {
     local instance
-    instance="$(name-to-instance "consul0")" || exit
+    instance="$(get-instance-of "consul")" || exit
 
     incus exec "${instance}" -- /nomad/bin/consul keygen > ./.consul-key ||
         failure "Unable to generate nomad gossip key"
@@ -288,7 +323,7 @@ function consul-init() {
 # Get the consul gossip key. This will always be
 # stored on the initial server instance.
 function consul-gossip-key() {
-    instance="$(name-to-instance "consul0")" || exit
+    instance="$(get-instance-of "consul")" || exit
     local key
     key="$(incus exec "${instance}" -- cat /.consul-key)" ||
         failure "Unable to read consul gossip key value"
@@ -299,8 +334,9 @@ function consul-gossip-key() {
 # Get the address of the consul server. This is always
 # just the first created consul server.
 function consul-address() {
-    local address
-    address="$(get-instance-address "consul0")" || exit
+    local address instance
+    instance="$(get-instance-of "consul")" || exit
+    address="$(get-instance-address "${instance}")" || exit
     printf "%s" "${address}"
 }
 
@@ -850,4 +886,19 @@ function cluster-must-not-exist() {
     if [ -n "$(get-instances)" ]; then
         failure "Cluster already exists"
     fi
+}
+
+# Retuns formatted status of instance
+#
+# $1 - Name of instance
+function get-instance-display-status() {
+    local name="${1?name of instance required}"
+    local instance
+    instance="$(name-to-instance "${name}")" || exit
+    case "$(status-instance "${instance}")" in
+        "running") printf "%brunning%b" "${TEXT_GREEN}" "${TEXT_CLEAR}" ;;
+        "stopped") printf "%bstopped%b" "${TEXT_RED}" "${TEXT_CLEAR}" ;;
+        "frozen") printf "%bpaused%b" "${TEXT_YELLOW}" "${TEXT_CLEAR}" ;;
+        *) printf "unknown" ;;
+    esac
 }
