@@ -7,7 +7,75 @@ root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
 
 . "${root}/common.bash" || exit 1
 
+for arg in "${@}"; do
+    shift
+    case "${arg}" in
+        "--servers") set -- "${@}" "-s" ;;
+        "--clients") set -- "${@}" "-c" ;;
+        "--consuls") set -- "${@}" "-o" ;;
+        "--help") set -- "${@}" "-h" ;;
+        *) set -- "${@}" "${arg}" ;;
+    esac
+done
+
+while getopts "hcso" opt; do
+    case "${opt}" in
+        "c") clients="1" ;;
+        "s") servers="1" ;;
+        "o") consuls="1" ;;
+        "h") help="1" ;;
+        *) help="1" ;;
+    esac
+done
+shift $((OPTIND-1))
+
+if [ -n "${help}" ]; then
+    printf "Usage: %s [options]\n" "${SCRIPT_NAME}"
+    printf "\t--servers, -s\tCluster servers status\n"
+    printf "\t--clients, -c\tCluster clients status\n"
+    printf "\t--consuls, -o\tCluster consuls status\n"
+    exit 1
+fi
+
 cluster-must-exist
+
+printf "Current Cluster Status (%b%s%b)\n\n" "${TEXT_YELLOW}" "${DIR_SHA}" "${TEXT_CLEAR}"
+
+if [ -n "${servers}" ]; then
+    readarray -t list < <(get-instances "server")
+    srv_count="${#list[@]}"
+
+    info "Nomad server instances (%d instances):" "${srv_count}"
+    for instance in "${list[@]}"; do
+        printf " • %s - %s\n" "${instance}" "$(get-instance-display-status "${instance}")"
+    done
+fi
+
+if [ -n "${clients}" ]; then
+    readarray -t list < <(get-instances "client")
+    srv_count="${#list[@]}"
+
+    info "Nomad client instances (%d instances):" "${srv_count}"
+    for instance in "${list[@]}"; do
+        printf " • %s - %s\n" "${instance}" "$(get-instance-display-status "${instance}")"
+    done
+fi
+
+if [ -n "${consuls}" ]; then
+    readarray -t list < <(get-instances "consul")
+    srv_count="${#list[@]}"
+
+    info "Nomad consul instances (%d instances):" "${srv_count}"
+    for instance in "${list[@]}"; do
+        printf " • %s - %s\n" "${instance}" "$(get-instance-display-status "${instance}")"
+    done
+fi
+
+# Only provide summary information if expanded information
+# was not requested
+if [ -n "${servers}" ] || [ -n "${clients}" ] || [ -n "${consuls}" ]; then
+    exit
+fi
 
 readarray -t list < <(get-instances)
 
@@ -90,7 +158,6 @@ if [ "${consuls_paused}" -gt "0" ]; then
     cnsl_stat+=("$(printf "(%d %bpaused%b)" "${consuls_paused}" "${TEXT_YELLOW}" "${TEXT_CLEAR}")")
 fi
 
-printf "Current Cluster Status (%b%s%b)\n\n" "${TEXT_YELLOW}" "${DIR_SHA}" "${TEXT_CLEAR}"
 printf "» Nomad servers: %d instances %s\n" "${servers}" "${srv_stat[*]}"
 printf "» Nomad clients: %d instances %s\n" "${clients}" "${clnt_stat[*]}"
 
@@ -101,8 +168,7 @@ else
 fi
 
 if [ "${consuls}" -gt "0" ]; then
-    printf "%b•%b consul: %benabled%b (%d servers) %s\n" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${TEXT_GREEN}" "${TEXT_CLEAR}" \
-        "${consuls}" "${cnsl_stat[*]}"
+    printf "%b•%b consul: %benabled%b %s\n" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${cnsl_stat[*]}"
 else
     printf "%b•%b consul: %bdisabled%b\n" "${TEXT_RED}" "${TEXT_CLEAR}" "${TEXT_RED}" "${TEXT_CLEAR}"
 fi
