@@ -13,13 +13,14 @@ for arg in "$@"; do
         "--all") set -- "${@}" "-a" ;;
         "--servers") set -- "${@}" "-s" ;;
         "--clients") set -- "${@}" "-c" ;;
-        "--consuls") set -- "${@}" "-C" ;;
+        "--consul-servers") set -- "${@}" "-C" ;;
+        "--consul-clients") set -- "${@}" "-o" ;;
         "--help") set -- "${@}" "-h" ;;
         *) set -- "${@}" "${arg}" ;;
     esac
 done
 
-while getopts "ahcsC" opt; do
+while getopts "ahcsCo" opt; do
     case "${opt}" in
         "a")
             clients="1"
@@ -29,22 +30,24 @@ while getopts "ahcsC" opt; do
         "c") clients="1" ;;
         "s") servers="1" ;;
         "C") consuls="1" ;;
+        "o") consul_clients="1" ;;
         "h") help="1" ;;
         *) help="1" ;;
     esac
 done
 shift $((OPTIND-1))
 
-if [ -z "${consuls}" ] && [ -z "${clients}" ] && [ -z "${servers}" ] && [ "${#}" -lt "1" ]; then
+if [ -z "${consuls}" ] && [ -z "${consul_clients}" ] && [ -z "${clients}" ] && [ -z "${servers}" ] && [ "${#}" -lt "1" ]; then
     help="1"
 fi
 
 if [ -n "${help}" ]; then
     printf "Usage: %s [options] [INSTANCE [INSTANCE...]]\n" "${SCRIPT_NAME}"
-    printf "\t--all, -a\tStream all logs\n"
-    printf "\t--clients, -c\tStream all client logs\n"
-    printf "\t--servers, -s\tStream all server logs\n"
-    printf "\t--consuls, -C\tStream all consul logs\n"
+    printf "\t--all, -a\t\tStream all logs\n"
+    printf "\t--clients, -c\t\tStream all client logs\n"
+    printf "\t--servers, -s\t\tStream all server logs\n"
+    printf "\t--consul-servers, -C\tStream all consul server logs\n"
+    printf "\t--consul-clients, -o\tStream all consul client logs\n"
     exit 1
 fi
 
@@ -52,7 +55,7 @@ cluster-must-exist
 
 pids=()
 if [ -n "${servers}" ]; then
-    readarray -t list < <(get-instances server)
+    readarray -t list < <(get-instances "server")
     for i in "${list[@]}"; do
         stream-logs "${i}" &
         pids+=("${!}")
@@ -60,7 +63,7 @@ if [ -n "${servers}" ]; then
 fi
 
 if [ -n "${clients}" ]; then
-    readarray -t list < <(get-instances client)
+    readarray -t list < <(get-instances "client")
     for i in "${list[@]}"; do
         stream-logs "${i}" &
         pids+=("${!}")
@@ -68,9 +71,21 @@ if [ -n "${clients}" ]; then
 fi
 
 if [ -n "${consuls}" ]; then
-    readarray -t list < <(get-instances consul)
+    readarray -t list < <(get-instances "consul")
     for i in "${list[@]}"; do
         stream-logs "${i}" &
+        pids+=("${!}")
+    done
+fi
+
+if [ -n "${consul_clients}" ]; then
+    instances=()
+    readarray -t list < <(get-instances "server")
+    instances+=("${list[@]}")
+    readarray -t list < <(get-instances "client")
+    instances+=("${list[@]}")
+    for i in "${instances[@]}"; do
+        stream-logs "${i}" "consul" &
         pids+=("${!}")
     done
 fi

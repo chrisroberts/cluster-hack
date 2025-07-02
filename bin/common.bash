@@ -658,18 +658,21 @@ function restart-nomad() {
 # Stream nomad logs from instance
 #
 # $1 - Name of instance
+# $2 - Optional service name
 function stream-logs() {
     local name="${1?Name is required}"
     local instance
     instance="$(name-to-instance "${name}")" || exit
     local instance="${1?Instance name is required}"
-    local service_name
+    local service_name="${2}"
 
-    case "${instance}" in
-        *"server"*) service_name="nomad" ;;
-        *"client"*) service_name="nomad-client" ;;
-        *"consul"*) service_name="consul" ;;
-    esac
+    if [ -z "${service_name}" ]; then
+        case "${instance}" in
+            *"server"*) service_name="nomad" ;;
+            *"client"*) service_name="nomad-client" ;;
+            *"consul"*) service_name="consul" ;;
+        esac
+    fi
 
     incus exec "${instance}" -- /helpers/stream-log "${service_name}"
 }
