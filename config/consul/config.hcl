@@ -4,3 +4,4 @@ encrypt     = "%GOSSIP_KEY%"
 retry_join  = ["%ADDR%"]
 bind_addr   = "0.0.0.0"
 client_addr = "0.0.0.0"
+log_level   = "TRACE"
