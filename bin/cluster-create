@@ -208,3 +208,14 @@ info "Updating direnv with new nomad address..."
 
 sed -i.bak "s/export NOMAD_ADDR=.*$/export NOMAD_ADDR=\"http:\/\/${addr}:4646\"/" ./.envrc ||
     failure "Unable to update direnv with new nomad address: http://%s:4646" "${addr}"
+
+if [ -z "${consul_enabled}" ]; then
+    if [[ "${envrc}" == *"CONSUL_HTTP_ADDR"* ]]; then
+        sed -i.bak "s/export CONSUL_HTTP_ADDR=.*$/export CONSUL_HTTP_ADDR=\"${addr}:8500\"/" ./.envrc ||
+            failure "Unable to update direnv with new consul address: %s:8500" "${addr}"
+    else
+        printf 'export CONSUL_HTTP_ADDR="%s:8500"' "${addr}" >> ./.envrc
+    fi
+else
+    sed -i.bak "s/export CONSUL_HTTP_ADDR=.*$//" ./.envrc
+fi
