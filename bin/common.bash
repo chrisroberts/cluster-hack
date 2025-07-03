@@ -591,7 +591,10 @@ function restart-nomad() {
         names+=("${instance}")
         # Only lookup node ids for clients
         if [[ "${instance}" == *"client"* ]]; then
-            nids+=("$(name-to-node "${instance}")") || exit
+            # If the lookup fails, just continue. The error will
+            # be printed so the issue is known, but the service
+            # restart will still be executed
+            nids+=("$(name-to-node "${instance}")") || continue
         fi
     done
 
@@ -642,6 +645,10 @@ function restart-nomad() {
         fi
 
         nid="${nids[$i]}"
+        if [ -z "${nid}" ]; then
+            continue
+        fi
+
         while [ "${eligibility}" == "" ]; do
             eligibility="$(nomad node status -json "${nid}" | jq -r '.SchedulingEligibility')"
             sleep 0.1
