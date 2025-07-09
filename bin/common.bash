@@ -130,6 +130,19 @@ function launch-consul-server-instance() {
     configure-consul-server "${name}" "${count}" || exit
 }
 
+# Fully launch a vault instance
+#
+# $1 - Name of instance
+function launch-vault-server-instance() {
+    local name="${1?Name of server required}"
+
+    create-cluster-instance "${name}" || exit
+    if is-consul-enabled; then
+        consul-enable "${name}" || exit
+    fi
+    configure-vault-server "${name}" || exit
+}
+
 # Configure an instance for consul server and start the service
 #
 # $1 - Name of instance
@@ -154,11 +167,14 @@ function configure-consul-server() {
 
     incus exec "${name}" -- mkdir -p /etc/consul/config.d ||
         failure "Could not create consul configuration directory on %s" "${name}"
-    incus exec "${name}" -- /helpers/sed-helper "s/%NUM%/${count}/" /cluster/config/consul/server/config.hcl /etc/consul/config.d/00-server.hcl ||
+    incus exec "${name}" -- /helpers/sed-helper "s/%NUM%/${count}/" \
+        /cluster/config/consul/server/config.hcl /etc/consul/config.d/00-server.hcl ||
         failure "Could not install consul server configuration on %s" "${name}"
-    incus exec "${name}" -- /helpers/sed-helper "s|%GOSSIP_KEY%|${gossip_key}|" /cluster/config/consul/config.hcl /tmp/consul.hcl ||
+    incus exec "${name}" -- /helpers/sed-helper "s|%GOSSIP_KEY%|${gossip_key}|" \
+        /cluster/config/consul/config.hcl /tmp/consul.hcl ||
         failure "Could not modify consul configuration on %s" "${name}"
-    incus exec "${name}" -- /helpers/sed-helper "s/%ADDR%/${addr}/" /tmp/consul.hcl /etc/consul/config.d/01-consul.hcl ||
+    incus exec "${name}" -- /helpers/sed-helper "s/%ADDR%/${addr}/" \
+        /tmp/consul.hcl /etc/consul/config.d/01-consul.hcl ||
         failure "Could not modify consul join configuration on %s" "${name}"
     incus exec "${name}" -- sh -c "echo '${gossip_key}' > /.consul-key" ||
         failure "Could not cache gossip key on %s" "${name}"
@@ -181,6 +197,213 @@ function configure-consul-server() {
     start-service "${name}" "consul" || exit
 }
 
+# Initializes nomad. This bootstraps
+# the ACL system.
+#
+# $1 - Name of the client instance
+function init-nomad() {
+    local name="${1?Name of client required}"
+    local instance
+    instance="$(name-to-instance "${name}")" || exit
+
+    info "Initializing nomad..."
+    local addr
+    addr="$(get-instance-address "${instance}")" || exit
+    unset NOMAD_TOKEN # NOTE: this might be set with old value via direnv
+    export NOMAD_ADDR="http://${addr}:4646"
+
+    result="$(nomad acl bootstrap -json)" ||
+        failure "Failed to execute nomad ACL bootstrap on %s" "${instance}"
+    secret_id="$(printf "%s" "${result}" | jq -r '.SecretID')" ||
+        failure "Failed to extract secret ID from nomad bootstrap on %s" "${instance}"
+    incus exec "${instance}" -- sh -c "printf '%s' '${secret_id}' > /nomad-token" ||
+        failure "Failed to store nomad secret ID"
+    success "Initialization of nomad complete"
+}
+
+# Get the nomad token from the initialized server instance
+#
+# $1 - Name of the instance
+function nomad-token() {
+    local name="${1?Name of server required}"
+    local instance
+    instance="$(name-to-instance "${name}")" || exit
+
+    incus exec "${instance}" -- cat /nomad-token
+}
+
+# Initializes the vault server. Runs the operator init
+# storing the unseal key and root token. Then unseals
+# the vault.
+#
+# $1 - Name of the instance
+function init-vault-server() {
+    local name="${1?Name of server required}"
+    local instance
+    instance="$(name-to-instance "${name}")" || exit
+
+    info "Initializing vault server..."
+    local addr
+    addr="$(get-instance-address "${instance}")" || exit
+    export VAULT_SKIP_VERIFY="true"
+    export VAULT_ADDR="https://${addr}:8200"
+    local available attempts
+    for ((attempts=0; attempts < 10; attempts++)); do
+        if incus exec "${instance}" -- nc -z -w1 "${addr}" "8200" > /dev/null 2>&1; then
+            available="1"
+            break
+        fi
+        sleep 0.1
+    done
+
+    if [ -z "${available}" ]; then
+        failure "Vault instance is not currently listening on %s" "${instance}"
+    fi
+
+    result="$(vault operator init -format=json -key-shares=1 -key-threshold=1)" ||
+        failure "Failed to run vault initialization on %s" "${instance}"
+    root_token="$(printf "%s" "${result}" | jq -r '.root_token')" ||
+        failure "Unable to extract root token on %s" "${instance}"
+    unseal_key="$(printf "%s" "${result}" | jq -r '.unseal_keys_hex[]')" ||
+        failure "Unable to extract unseal key on %s" "${instance}"
+
+    incus exec "${instance}" -- sh -c "printf '%s' '${root_token}' > /opt/vault/operator/root_token" ||
+        failure "Unable to store root token on %s" "${instance}"
+    incus exec "${instance}" -- sh -c "printf '%s' '${unseal_key}' > /opt/vault/operator/unseal_key" ||
+        failure "Unable to store unseal key on %s" "${instance}"
+
+    vault operator unseal "${unseal_key}" > /dev/null ||
+        failure "Failed to unseal vault on %s" "${instance}"
+
+    success "Vault server initialized and ready"
+}
+
+# Get the unseal key for vault
+function vault-unseal-key() {
+    local instance
+    instance="$(get-instance-of "vault")" || exit
+
+    incus exec "${instance}" -- cat /opt/vault/operator/unseal_key
+}
+
+# Get the root token for vault
+function vault-root-token() {
+    local instance
+    instance="$(get-instance-of "vault")" || exit
+
+    incus exec "${instance}" -- cat /opt/vault/operator/root_token
+}
+
+# Get the address for vault
+function vault-address() {
+    local instance addr
+    instance="$(get-instance-of "vault")" || exit
+    addr="$(get-instance-address "${instance}")" || exit
+
+    printf "%s" "${addr}"
+}
+
+# Initialize the vault server instance. Currently
+# this means generating the TLS cert/key. Only needs
+# to be run on the initial vault instance.
+#
+# $1 - Name of instance
+function vault-init() {
+    local name="${1?Name of server required}"
+    local instance
+    instance="$(name-to-instance "${name}")" || exit
+
+    info "Initializing instance for vault..."
+    incus exec "${instance}" -- apt-get update > /dev/null ||
+        failure "Could not update apt on %s" "${instance}"
+    incus exec "${instance}" -- apt-get install -qy openssl > /dev/null ||
+        failure "Could not install openssl on %s" "${instance}"
+    incus exec "${instance}" -- mkdir -p /opt/vault/tls ||
+        failure "Could not create TLS directory on %s" "${instance}"
+    incus exec "${instance}" -- openssl req -out /opt/vault/tls/vault.crt \
+        -new -keyout /opt/vault/tls/vault.key -newkey rsa:4096 -nodes \
+        -sha256 -x509 -subj "/O=HashiCorp/CN=Vault" -days 365 > /dev/null 2>&1 ||
+        failure "Failed to generate vault TLS key/cert files on %s" "${instance}"
+    success "Vault instance initialization complete"
+}
+
+# Configure an instance for vault server
+#
+# $1 - Name of instance
+function configure-vault-server() {
+    local name="${1?Name of server required}"
+    local instance
+    instance="$(name-to-instance "${name}")" || exit
+
+    info "Configuring vault server instance - %s" "${instance}"
+    incus exec "${instance}" -- mkdir -p /opt/vault/data ||
+        failure "Could not create data directory on %s" "${instance}"
+    incus exec "${instance}" -- mkdir -p /opt/vault/tls ||
+        failure "Could not create TLS directory on %s" "${instance}"
+    incus exec "${instance}" -- mkdir -p /opt/vault/operator ||
+        failure "Could not create operator directory on %s" "${instance}"
+    incus exec "${instance}" -- mkdir -p /etc/vault/config.d ||
+        failure "Could not create vault config directory on %s" "${instance}"
+
+    # Copy in tls files unless it's the initial vault
+    # instance since it will be initialized directly
+    if [[ "${instance}" != *"vault0" ]]; then
+        local dir vault addr
+        vault="$(get-instance-of "vault")" || exit
+        dir="$(mktemp -d)" || failure "Could not create temporary operator directory"
+
+        incus file pull --recursive "${vault}/opt/vault/operator/" "${dir}" ||
+            failure "Could not fetch operator files from %s" "${vault}"
+        pushd "${dir}/operator" > /dev/null || failure "Could not move to %s" "${dir}"
+        incus file push --recursive "." "${instance}/opt/vault/operator" ||
+            failure "Could not add operator files to %s" "${instance}"
+        popd > /dev/null || failure "Could not move back to original directory"
+        rm -rf "${dir}"
+        dir="$(mktemp -d)" || failure "Could not create temporary TLS directory"
+        incus file pull --recursive "${vault}/opt/vault/tls/" "${dir}" ||
+            failure "Could not fetch TLS files from %s" "${vault}"
+        pushd "${dir}/tls" > /dev/null || failure "Could not move to %s" "${dir}"
+        incus file push --recursive "." "${instance}/opt/vault/tls" ||
+            failure "Could not add TLS files to %s" "${instance}"
+        popd > /dev/null || failure "Could not move back to original directory"
+        rm -rf "${dir}"
+
+        incus exec "${instance}" -- chown -R root:root /opt/vault ||
+            failure "Could not update vault directory ownership on %s" "${instance}"
+
+        addr="$(get-instance-address "${vault}")" || exit
+        incus exec "${instance}" -- /helpers/sed-helper "s/%ADDR%/${addr}/" \
+            /cluster/config/vault/storage-join.hcl /etc/vault/config.d/10-storage-join.hcl ||
+            failure "Could not add join configuration on %s" "${instance}"
+    fi
+
+    local addr
+    addr="$(get-instance-address "${instance}")" || exit
+    incus exec "${instance}" -- /helpers/sed-helper "s/%ADDR%/${addr}/g" \
+        /cluster/config/vault/config.hcl /etc/vault/config.d/00-config.hcl ||
+        failure "Could not add base vault configuration on %s" "${instance}"
+    incus exec "${instance}" -- /helpers/sed-helper "s/%NODE_ID%/${instance}/" \
+        /cluster/config/vault/storage.hcl /etc/vault/config.d/01-storage.hcl ||
+        failure "Could not add vault storage configuration on %s" "${instance}"
+
+    files=(./config/vault/*.hcl)
+    if [ -f "${files[0]}" ]; then
+        info "Installing custom vault configuration files on %s..." "${instance}"
+        for cfg in "${files[@]}"; do
+            slim_name="$(basename "${cfg}")"
+            printf "  • adding config file - %s to %s\n" "${cfg}" "${instance}"
+            incus file push "${cfg}" "${instance}/etc/vault/config.d/99-${slim_name}" > /dev/null ||
+                failure "Error pushing vault configuration file (%s) into %s" "${slim_name}" "${instance}"
+        done
+    fi
+
+    info "Installing vault systemd unit file into %s" "${instance}"
+    incus exec "${instance}" -- cp /cluster/services/vault.service /etc/systemd/system/vault.service ||
+        failure "Could not install vault.service unit file into %s" "${instance}"
+
+    start-service "${instance}" "vault" || exit
+}
+
 # Configure an instance for nomad server
 #
 # $1 - Name of instance
@@ -196,7 +419,8 @@ function configure-nomad-server() {
         failure "Could not create nomad config directory on %s" "${instance}"
     incus exec "${instance}" -- cp /cluster/config/nomad/config.hcl /etc/nomad/config.d/00-config.hcl ||
         failure "Could not install base nomad configuration on %s" "${instance}"
-    incus exec "${instance}" -- /helpers/sed-helper "s/%NUM_SERVERS%/${count}/" /cluster/config/nomad/server/config.hcl /etc/nomad/config.d/01-server.hcl ||
+    incus exec "${instance}" -- /helpers/sed-helper "s/%NUM_SERVERS%/${count}/" \
+        /cluster/config/nomad/server/config.hcl /etc/nomad/config.d/01-server.hcl ||
         failure "Could not modify nomad server configuration %s" "${instance}"
 
     files=(./config/nomad/server/*.hcl)
@@ -211,7 +435,8 @@ function configure-nomad-server() {
     fi
 
     info "Installing nomad systemd unit file into %s" "${instance}"
-    incus exec "${instance}" -- /helpers/sed-helper "s/%NOMAD_NAME%/nomad/" /cluster/services/nomad.service /etc/systemd/system/nomad.service ||
+    incus exec "${instance}" -- /helpers/sed-helper "s/%NOMAD_NAME%/nomad/" \
+        /cluster/services/nomad.service /etc/systemd/system/nomad.service ||
         failure "Could not install nomad.service unit file into %s" "${instance}"
 
     success "Base server nomad configuration applied to %s" "${instance}"
@@ -245,7 +470,8 @@ function configure-nomad-client() {
     fi
 
     info "Installing nomad systemd unit file into %s" "${instance}"
-    incus exec "${instance}" -- /helpers/sed-helper "s/%NOMAD_NAME%/nomad-client/" /cluster/services/nomad.service /etc/systemd/system/nomad-client.service ||
+    incus exec "${instance}" -- /helpers/sed-helper "s/%NOMAD_NAME%/nomad-client/" \
+        /cluster/services/nomad.service /etc/systemd/system/nomad-client.service ||
         failure "Could not install nomad-client.service unit file into %s" "${instance}"
 
     success "Base client nomad configuration applied to %s" "${instance}"
@@ -262,7 +488,10 @@ function server-nomad-discovery() {
     local addr
     addr="$(get-instance-address "${srv}")" || exit
 
-    incus exec "${instance}" -- /helpers/sed-helper "s/%ADDR%/${addr}/" /cluster/config/nomad/server/server_join.hcl /etc/nomad/config.d/01-join.hcl ||
+    info "Enabling nomad server discovery on %s" "${instance}"
+
+    incus exec "${instance}" -- /helpers/sed-helper "s/%ADDR%/${addr}/" \
+        /cluster/config/nomad/server/server_join.hcl /etc/nomad/config.d/01-join.hcl ||
         failure "Could not install nomad discovery configuration into %s" "${instance}"
 
     success "Enabled nomad server discovery on %s" "${instance}"
@@ -295,7 +524,8 @@ function client-nomad-discovery() {
     local addr
     addr="$(get-instance-address "${srv}")" || exit
 
-    incus exec "${instance}" -- /helpers/sed-helper "s/%ADDR%/${addr}/" /cluster/config/nomad/client/server_join.hcl /etc/nomad/config.d/01-join.hcl ||
+    incus exec "${instance}" -- /helpers/sed-helper "s/%ADDR%/${addr}/" \
+        /cluster/config/nomad/client/server_join.hcl /etc/nomad/config.d/01-join.hcl ||
         failure "Could not install nomad discovery configuration into %s" "${instance}"
 
     success "Enabled nomad server discovery on %s" "${instance}"
@@ -303,9 +533,10 @@ function client-nomad-discovery() {
 
 # Checks if consul is enabled in the cluster
 function is-consul-enabled() {
-    if ! get-instance-of "consul" > /dev/null 2>&1; then
+    if [ -z "$(get-instances "consul")" ]; then
         return 1
     fi
+
     return 0
 }
 
@@ -678,6 +909,7 @@ function stream-logs() {
             *"server"*) service_name="nomad" ;;
             *"client"*) service_name="nomad-client" ;;
             *"consul"*) service_name="consul" ;;
+            *"vault"*) service_name="vault" ;;
         esac
     fi
 
@@ -822,6 +1054,11 @@ function install-bins() {
         incus exec "${instance}" -- rm -f "/cluster-bins/${bin}"
         incus exec "${instance}" -- cp "/nomad/bin/${bin}" "/cluster-bins/${bin}" ||
             failure "Could not install %s on %s" "${bin}" "${instance}"
+        # if the bin is vault update capabilities
+        if [ "${bin}" == "vault" ]; then
+            incus exec "${instance}" -- setcap cap_ipc_lock=+ep "/cluster-bins/${bin}" ||
+                failure "Could not adjust capabilities on vault binary"
+        fi
     done
 }
 
@@ -902,6 +1139,20 @@ function cluster-must-not-exist() {
     fi
 }
 
+# Check that consul is enabled for cluster
+# and is function and fail if not
+function cluster-must-have-consul() {
+    if [ -z "$(get-instances "consul")" ]; then
+        failure "Cluster must have consul enabled"
+    fi
+}
+
+function cluster-must-have-vault() {
+    if [ -z "$(get-instances "vault")" ]; then
+        failure "Cluster must have vault enabled"
+    fi
+}
+
 # Retuns formatted status of instance
 #
 # $1 - Name of instance
@@ -915,4 +1166,15 @@ function get-instance-display-status() {
         "frozen") printf "%bpaused%b" "${TEXT_YELLOW}" "${TEXT_CLEAR}" ;;
         *) printf "unknown" ;;
     esac
+}
+
+# Returns if consul is usable
+function consul-is-usable() {
+    if ! command -v consul > /dev/null 2>&1; then
+        return 1
+    fi
+
+    if ! consul info > /dev/null 2>&1; then
+        return 1
+    fi
 }

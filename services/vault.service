@@ -1,0 +1,20 @@
+[Unit]
+Description="HashiCorp Vault"
+Requires=network-online.target
+After=network-online.target
+
+[Service]
+User=root
+Group=root
+SecureBits=keep-caps
+AmbientCapabilities=CAP_IPC_LOCK
+CapabilityBoundingSet=CAP_SYSLOG CAP_IPC_LOCK
+NoNewPrivileges=yes
+ExecStart=/cluster-bins/vault server -config=/etc/vault/config.d/
+ExecReload=/bin/kill --signal HUP
+KillMode=process
+KillSignal=SIGINT
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

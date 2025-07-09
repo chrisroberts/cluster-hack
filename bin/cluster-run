@@ -42,7 +42,7 @@ if [ -z "${clients}" ] && [ -z "${servers}" ] && [ -z "${instance}" ]; then
 fi
 
 if [ -n "${help}" ]; then
-    printf "Usage: %s [options] [COMMAND...]\n" "${SCRIPT_NAME}"
+    printf "Usage: %s [options] COMMAND\n" "${SCRIPT_NAME}"
     printf "\t--all, -a\t\t\tRun on all instances\n"
     printf "\t--clients, -c\t\t\tRun on client instances\n"
     printf "\t--servers, -s\t\t\tRun on server instances\n"

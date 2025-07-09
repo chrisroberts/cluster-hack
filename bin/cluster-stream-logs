@@ -15,12 +15,13 @@ for arg in "$@"; do
         "--clients") set -- "${@}" "-c" ;;
         "--consul-servers") set -- "${@}" "-C" ;;
         "--consul-clients") set -- "${@}" "-o" ;;
+        "--vault") set -- "${@}" "-V" ;;
         "--help") set -- "${@}" "-h" ;;
         *) set -- "${@}" "${arg}" ;;
     esac
 done
 
-while getopts "ahcsCo" opt; do
+while getopts "ahcsCoV" opt; do
     case "${opt}" in
         "a")
             clients="1"
@@ -31,13 +32,14 @@ while getopts "ahcsCo" opt; do
         "s") servers="1" ;;
         "C") consuls="1" ;;
         "o") consul_clients="1" ;;
+        "V") vaults="1" ;;
         "h") help="1" ;;
         *) help="1" ;;
     esac
 done
 shift $((OPTIND-1))
 
-if [ -z "${consuls}" ] && [ -z "${consul_clients}" ] && [ -z "${clients}" ] && [ -z "${servers}" ] && [ "${#}" -lt "1" ]; then
+if [ -z "${vaults}" ] && [ -z "${consuls}" ] && [ -z "${consul_clients}" ] && [ -z "${clients}" ] && [ -z "${servers}" ] && [ "${#}" -lt "1" ]; then
     help="1"
 fi
 
@@ -48,6 +50,7 @@ if [ -n "${help}" ]; then
     printf "\t--servers, -s\t\tStream all server logs\n"
     printf "\t--consul-servers, -C\tStream all consul server logs\n"
     printf "\t--consul-clients, -o\tStream all consul client logs\n"
+    printf "\t--vault, -V\t\tStream all vault server logs\n"
     exit 1
 fi
 
@@ -86,6 +89,16 @@ if [ -n "${consul_clients}" ]; then
     instances+=("${list[@]}")
     for i in "${instances[@]}"; do
         stream-logs "${i}" "consul" &
+        pids+=("${!}")
+    done
+fi
+
+if [ -n "${vaults}" ]; then
+    instances=()
+    readarray -t list < <(get-instances "vault")
+    instances+=("${list[@]}")
+    for i in "${instances[@]}"; do
+        stream-logs "${i}" &
         pids+=("${!}")
     done
 fi

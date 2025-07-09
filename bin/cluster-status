@@ -13,16 +13,18 @@ for arg in "${@}"; do
         "--servers") set -- "${@}" "-s" ;;
         "--clients") set -- "${@}" "-c" ;;
         "--consuls") set -- "${@}" "-o" ;;
+        "--vaults") set -- "${@}" "-V" ;;
         "--help") set -- "${@}" "-h" ;;
         *) set -- "${@}" "${arg}" ;;
     esac
 done
 
-while getopts "hcso" opt; do
+while getopts "hcsoV" opt; do
     case "${opt}" in
         "c") clients="1" ;;
         "s") servers="1" ;;
         "o") consuls="1" ;;
+        "V") vaults="1" ;;
         "h") help="1" ;;
         *) help="1" ;;
     esac
@@ -34,6 +36,7 @@ if [ -n "${help}" ]; then
     printf "\t--servers, -s\tCluster servers status\n"
     printf "\t--clients, -c\tCluster clients status\n"
     printf "\t--consuls, -o\tCluster consuls status\n"
+    printf "\t--vaults, -V\tCluster vaults status\n"
     exit 1
 fi
 
@@ -65,7 +68,17 @@ if [ -n "${consuls}" ]; then
     readarray -t list < <(get-instances "consul")
     srv_count="${#list[@]}"
 
-    info "Nomad consul instances (%d instances):" "${srv_count}"
+    info "Consul instances (%d instances):" "${srv_count}"
+    for instance in "${list[@]}"; do
+        printf " • %s - %s\n" "${instance}" "$(get-instance-display-status "${instance}")"
+    done
+fi
+
+if [ -n "${vaults}" ]; then
+    readarray -t list < <(get-instances "vault")
+    srv_count="${#list[@]}"
+
+    info "Vault instances (%d instances)" "${srv_count}"
     for instance in "${list[@]}"; do
         printf " • %s - %s\n" "${instance}" "$(get-instance-display-status "${instance}")"
     done
@@ -73,7 +86,7 @@ fi
 
 # Only provide summary information if expanded information
 # was not requested
-if [ -n "${servers}" ] || [ -n "${clients}" ] || [ -n "${consuls}" ]; then
+if [ -n "${servers}" ] || [ -n "${clients}" ] || [ -n "${consuls}" ] || [ -n "${vaults}" ]; then
     exit
 fi
 
@@ -82,18 +95,22 @@ readarray -t list < <(get-instances)
 servers="0"
 clients="0"
 consuls="0"
+vaults="0"
 
 servers_running="0"
 clients_running="0"
 consuls_running="0"
+vaults_running="0"
 
 servers_stopped="0"
 clients_stopped="0"
 consuls_stopped="0"
+vaults_stopped="0"
 
 servers_paused="0"
 clients_paused="0"
 consuls_paused="0"
+vaults_paused="0"
 
 for instance in "${list[@]}"; do
     state="$(status-instance "${instance}")" || exit
@@ -120,6 +137,14 @@ for instance in "${list[@]}"; do
                 "running") ((consuls_running++)) ;;
                 "stopped") ((consuls_stopped++)) ;;
                 "frozen") ((consuls_paused++)) ;;
+            esac
+            ;;
+        *"vault"*)
+            ((vaults++))
+            case "${state}" in
+                "running") ((vaults_running++)) ;;
+                "stopped") ((vaults_stopped++)) ;;
+                "frozen") ((vaults_paused++)) ;;
             esac
             ;;
     esac
@@ -158,6 +183,18 @@ if [ "${consuls_paused}" -gt "0" ]; then
     cnsl_stat+=("$(printf "(%d %bpaused%b)" "${consuls_paused}" "${TEXT_YELLOW}" "${TEXT_CLEAR}")")
 fi
 
+vlt_stat=()
+if [ "${vaults_running}" -gt "0" ]; then
+    vlt_stat+=("$(printf "(%d %brunning%b)" "${vaults_running}" "${TEXT_GREEN}" "${TEXT_CLEAR}")")
+fi
+if [ "${vaults_stopped}" -gt "0" ]; then
+    vlt_stat+=("$(printf "(%d %bstopped%b)" "${vaults_stopped}" "${TEXT_RED}" "${TEXT_CLEAR}")")
+fi
+if [ "${vaults_paused}" -gt "0" ]; then
+    vlt_stat+=("$(printf "(%d %bpaused%b)" "${vaults_paused}" "${TEXT_YELLOW}" "${TEXT_CLEAR}")")
+fi
+
+
 printf "» Nomad servers: %d instances %s\n" "${servers}" "${srv_stat[*]}"
 printf "» Nomad clients: %d instances %s\n" "${clients}" "${clnt_stat[*]}"
 
@@ -171,4 +208,10 @@ if [ "${consuls}" -gt "0" ]; then
     printf "%b•%b consul: %benabled%b %s\n" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${cnsl_stat[*]}"
 else
     printf "%b•%b consul: %bdisabled%b\n" "${TEXT_RED}" "${TEXT_CLEAR}" "${TEXT_RED}" "${TEXT_CLEAR}"
+fi
+
+if [ "${vaults}" -gt "0" ]; then
+    printf "%b•%b vault: %benabled%b %s\n" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${vlt_stat[*]}"
+else
+    printf "%b•%b vault: %bdisabled%b\n" "${TEXT_RED}" "${TEXT_CLEAR}" "${TEXT_RED}" "${TEXT_CLEAR}"
 fi
