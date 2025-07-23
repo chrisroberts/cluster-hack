@@ -4,6 +4,7 @@ Requires=network-online.target
 After=network-online.target
 
 [Service]
+Environment=PATH=/cluster-bins:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 User=root
 Group=root
 SecureBits=keep-caps
@@ -11,7 +12,7 @@ AmbientCapabilities=CAP_IPC_LOCK
 CapabilityBoundingSet=CAP_SYSLOG CAP_IPC_LOCK
 NoNewPrivileges=yes
 ExecStart=/cluster-bins/vault server -config=/etc/vault/config.d/
-ExecReload=/bin/kill --signal HUP
+ExecReload=/bin/kill --signal HUP $MAINPID
 KillMode=process
 KillSignal=SIGINT
 LimitNOFILE=65536

@@ -12,6 +12,7 @@ consul="0"
 vault="0"
 vm=""
 cacher=""
+network=""
 
 for arg in "${@}"; do
     shift
@@ -25,12 +26,13 @@ for arg in "${@}"; do
         "--vault") set -- "${@}" "-V" ;;
         "--vm") set -- "${@}" "-v" ;;
         "--cacher") set -- "${@}" "-A" ;;
+        "--network") set -- "${@}" "-n" ;;
         "--help") set -- "${@}" "-h" ;;
         *) set -- "${@}" "${arg}" ;;
     esac
 done
 
-while getopts "hc:s:m:C:i:o:vAV:" opt; do
+while getopts "hc:s:m:C:i:o:vAVn" opt; do
     case "${opt}" in
         "c") clients="${OPTARG}" ;;
         "s") servers="${OPTARG}" ;;
@@ -42,11 +44,12 @@ while getopts "hc:s:m:C:i:o:vAV:" opt; do
             consul_enabled="1"
             ;;
         "V")
-            vault="${OPTARG}"
+            vault="1"
             vault_enabled="1"
             ;;
         "v") vm="1" ;;
         "A") cacher="1" ;;
+        "n") network="1" ;;
         "h") help="1" ;;
         *) help="1" ;;
     esac
@@ -73,9 +76,10 @@ if [ -n "${help}" ]; then
     printf "\t--memory MEM, -m MEM\tMaximum memory allocated (default: 1GiB)\n"
     printf "\t--image NAME, -i NAME\tImage for instances\n"
     printf "\t--consul NUM, -o NUM\tEnable consul with number of servers (3 minimum)\n"
-    printf "\t--vault NUM, -V NUM\tEnable vault with number of servers (3 minimum)\n"
+    printf "\t--vault, -V\t\tEnable vault (currently single server only)\n"
     printf "\t--vm, -v\t\tUse virtual machine instances\n"
     printf "\t--cacher, -A\t\tEnable global apt cacher\n"
+    printf "\t--network, -n\t\tCreate isolated network (required for traffic control)\n"
     exit 1
 fi
 
@@ -101,11 +105,15 @@ if [ -n "${cacher}" ]; then
     launch-cluster-cacher-instance
 fi
 
+if [ -n "${network}" ]; then
+    create-cluster-network
+fi
+
 if [ -n "${consul_enabled}" ]; then
     info "Creating new consul cluster - %d servers..." "${consul}"
     # Create the seed instance
     create-cluster-instance "consul0" || exit
-    consul-init || exit
+    consul-preinit || exit
     configure-consul-server "consul0" "${consul}" || exit
 
     # Now create the rest
@@ -124,6 +132,7 @@ if [ -n "${consul_enabled}" ]; then
         failure "Error encountered launching consul instances"
     fi
 
+    init-consul "consul0" || exit
     success "Consul cluster creation complete"
 fi
 
@@ -131,7 +140,7 @@ if [ -n "${vault_enabled}" ]; then
     info "Creating new vault cluster - %d servers..." "${vault}"
     # Create the seed instance
     create-cluster-instance "vault0" || exit
-    vault-init "vault0" || exit
+    vault-preinit "vault0" || exit
     configure-vault-server "vault0" || exit
     init-vault-server "vault0" || exit
 
@@ -235,77 +244,42 @@ else
     fi
 fi
 
-nomad_token="$(nomad-token "client0")" || exit
+nomad_token="$(get-value "nomad-root-token")" || exit
+envcontent=()
+envcontent+=("$(printf 'export NOMAD_ADDR="http://%s:4646"\n' "${addr}")")
+envcontent+=("$(printf 'export NOMAD_TOKEN="%s"\n' "${nomad_token}")")
+
 if [ -n "${vault_enabled}" ]; then
     vault_addr="$(vault-address)" || exit
-    vault_token="$(vault-root-token)" || exit
+    vault_token="$(get-value "vault-root-token")" || exit
+    envcontent+=("$(printf 'export VAULT_ADDR="https://%s:8200"\n' "${vault_addr}")")
+    envcontent+=("$(printf 'export VAULT_TOKEN="%s"' "${vault_token}")")
+    envcontent+=("$(printf 'export VAULT_SKIP_VERIFY="true"\n')")
+fi
+
+if [ -n "${consul_enabled}" ]; then
+    consul_token="$(get-value "consul-root-token")" || exit
+    envcontent+=("$(printf 'export CONSUL_HTTP_ADDR="%s:8500"\n' "${addr}")")
+    envcontent+=("$(printf 'export CONSUL_HTTP_TOKEN="%s"\n' "${consul_token}")")
 fi
 
 if [ -n "${direnv_disabled}" ]; then
-    warn "direnv support not enabled, cluster information:"
-    printf '  export NOMAD_ADDR="http://%s:4646"\n' "${addr}"
-    printf '  export NOMAD_TOKEN="%s"\n' "${nomad_token}"
-    if [ -n "${consul_enabled}" ]; then
-        printf '  export CONSUL_HTTP_ADDR="%s:8500"\n' "${addr}"
-    fi
-    if [ -n "${vault_enabled}" ]; then
-        vault_addr="$(vault-address)" || exit
-        printf '  export VAULT_ADDR="https://%s:8200"\n' "${vault_addr}"
-        printf '  export VAULT_TOKEN="%s"' "${vault_token}"
-        printf '  export VAULT_SKIP_VERIFY="true"\n'
-    fi
+    warn "direnv support not enabled, cluster information:\n"
+    printf "%s\n" "${envcontent[@]}"
+    printf "\n"
 else
     info "Updating direnv with new nomad address..."
 
-    if [[ "${envrc}" == *"NOMAD_ADDR"* ]]; then
-        sed -i.bak "s/export NOMAD_ADDR=.*$/export NOMAD_ADDR=\"http:\/\/${addr}:4646\"/" ./.envrc ||
-            failure "Unable to update direnv with new nomad address: http://%s:4646" "${addr}"
-    else
-        printf 'export NOMAD_ADDR="https://%s:4646"\n' "${addr}" >> ./.envrc
-    fi
+    sed -i "/export NOMAD_ADDR=.*$/d" ./.envrc
+    sed -i "/export NOMAD_TOKEN=.*$/d" ./.envrc
+    sed -i "/export VAULT_ADDR=.*$/d" ./.envrc
+    sed -i "/export VAULT_TOKEN=.*$/d" ./.envrc
+    sed -i "/export VAULT_SKIP_VERIFY=.*$/d" ./.envrc
+    sed -i "/export CONSUL_HTTP_ADDR=.*$/d" ./.envrc
+    sed -i "/export CONSUL_HTTP_TOKEN=.*$/d" ./.envrc
+    sed -i "/^$/d" ./.envrc
 
-    if [[ "${envrc}" == *"NOMAD_TOKEN"* ]]; then
-        sed -i.bak "s/export NOMAD_TOKEN=.*$/export NOMAD_TOKEN=\"${nomad_token}\"/" ./.envrc ||
-            failure "Unable to update direnv with new nomad token"
-    else
-        printf 'export NOMAD_TOKEN="%s"' "${nomad_token}" >> ./.envrc
-    fi
-
-    if [ -n "${consul_enabled}" ]; then
-        printf " • Adding consul configuration\n"
-        if [[ "${envrc}" == *"CONSUL_HTTP_ADDR"* ]]; then
-            sed -i.bak "s/export CONSUL_HTTP_ADDR=.*$/export CONSUL_HTTP_ADDR=\"${addr}:8500\"/" ./.envrc ||
-                failure "Unable to update direnv with new consul address: %s:8500" "${addr}"
-        else
-            printf 'export CONSUL_HTTP_ADDR="%s:8500"\n' "${addr}" >> ./.envrc
-        fi
-    else
-        sed -i.bak "s/export CONSUL_HTTP_ADDR=.*$//" ./.envrc
-    fi
-
-    if [ -n "${vault_enabled}" ]; then
-        printf " • Adding vault configuration\n"
-
-        if [[ "${envrc}" == *"VAULT_ADDR"* ]]; then
-            sed -i.bak "s/export VAULT_ADDR=.*$/export VAULT_ADDR=\"https:\/\/${vault_addr}:8200\"/" ./.envrc ||
-                failure "Unable to update direnv with new vault address: https://%s:8200" "${vault_addr}"
-        else
-            printf 'export VAULT_ADDR="https://%s:8200"\n' "${vault_addr}" >> ./.envrc
-        fi
-        if [[ "${envrc}" == *"VAULT_TOKEN"* ]]; then
-            sed -i.bak "s/export VAULT_TOKEN=.*$/export VAULT_TOKEN=\"${vault_token}\"/" ./.envrc ||
-                failure "Unable to update direnv with new vault token"
-        else
-            printf 'export VAULT_TOKEN="%s"\n' "${vault_token}" >> ./.envrc
-        fi
-        if [[ "${envrc}" != *"VAULT_SKIP_VERIFY"* ]]; then
-            printf 'export VAULT_SKIP_VERIFY="true"\n' >> ./.envrc
-        fi
-    else
-        sed -i.bak "s/export VAULT_ADDR=.*$//" ./.envrc
-        sed -i.bak "s/export VAULT_TOKEN=.*$//" ./.envrc
-        sed -i.bak "s/export VAULT_SKIP_VERIFY=.*$//" ./.envrc
-    fi
+    printf "%s\n" "${envcontent[@]}" >> .envrc
 fi
 
 output="Cluster creation complete - ${servers} servers / ${clients} clients"

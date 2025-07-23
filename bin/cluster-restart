@@ -46,6 +46,8 @@ fi
 
 cluster-must-exist
 
+info "Restarting cluster instances..."
+
 list=()
 
 if [ -n "${clients}" ]; then

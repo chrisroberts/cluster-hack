@@ -12,6 +12,7 @@ After=network-online.target
 
 [Service]
 Type=notify
+Environment=PATH=/cluster-bins:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Nomad server should be run as the nomad user. Nomad clients
 # should be run as root

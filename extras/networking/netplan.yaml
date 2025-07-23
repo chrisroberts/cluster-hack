@@ -1,0 +1,6 @@
+network:
+  version: 2
+  ethernets:
+    %DEVICE_NAME%:
+      dhcp4: true
+      dhcp-identifier: mac

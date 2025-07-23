@@ -34,7 +34,7 @@ if [ "${#}" -lt 1 ] || [ ! -f "${root}/cluster-${subcommand}" ]; then
     done
 
     printf "Usage: cluster [subcommand]\n"
-    printf "%s" "${cmds[*]}" | sort | sed "s/ \t/ \n\t/g"
+    printf "%s\n" "${cmds[@]}"
 
     exit 1
 fi

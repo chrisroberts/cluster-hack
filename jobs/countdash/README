@@ -1,0 +1,4 @@
+Requires cluster to be built with consul. Intention
+must be loaded for the service to deploy successfully.
+
+$ consul config write ./jobs/countdash/consul-intention.hcl

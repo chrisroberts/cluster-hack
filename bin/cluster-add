@@ -10,6 +10,7 @@ cpus="1"
 image="ubuntu/noble"
 consul="0"
 vm=""
+impairment=""
 
 for arg in "${@}"; do
     shift
@@ -21,12 +22,13 @@ for arg in "${@}"; do
         "--image") set -- "${@}" "-i" ;;
         "--consul") set -- "${@}" "-o" ;;
         "--vm") set -- "${@}" "-v" ;;
+        "--impairment") set -- "${@}" "-I" ;;
         "--help") set -- "${@}" "-h" ;;
         *) set -- "${@}" "${arg}" ;;
     esac
 done
 
-while getopts "hc:s:m:C:i:o:vA" opt; do
+while getopts "hc:s:m:C:i:o:vAI:" opt; do
     case "${opt}" in
         "c") clients="${OPTARG}" ;;
         "s") servers="${OPTARG}" ;;
@@ -35,6 +37,7 @@ while getopts "hc:s:m:C:i:o:vA" opt; do
         "i") image="${OPTARG}" ;;
         "o") consul="${OPTARG}" ;;
         "v") vm="1" ;;
+        "I") impairment="${OPTARG}" ;;
         "h") help="1" ;;
         *) help="1" ;;
     esac
@@ -60,13 +63,14 @@ fi
 
 if [ -n "${help}" ]; then
     printf "Usage: %s [options] --servers n --clients n\n" "${SCRIPT_NAME}"
-    printf "\t--clients NUM, -c NUM\tNumber of client instances to add\n"
-    printf "\t--servers NUM, -s NUM\tNumber of server instances to add\n"
-    printf "\t--cpus NUM, -C NUM\tNumber of CPUs to assign instance (default: 1)\n"
-    printf "\t--memory MEM, -m MEM\tMaximum memory allocated (default: 1GiB)\n"
-    printf "\t--image NAME, -i NAME\tImage for instances\n"
-    printf "\t--consul NUM, -o NUM\tNumber of consul servers to add\n"
-    printf "\t--vm, -v\t\tUse virtual machine instances\n"
+    printf "\t--clients NUM, -c NUM\t\tNumber of client instances to add\n"
+    printf "\t--servers NUM, -s NUM\t\tNumber of server instances to add\n"
+    printf "\t--consul NUM, -o NUM\t\tNumber of consul servers to add\n"
+    printf "\t--cpus NUM, -C NUM\t\tNumber of CPUs to assign instance (default: 1)\n"
+    printf "\t--memory MEM, -m MEM\t\tMaximum memory allocated (default: 1GiB)\n"
+    printf "\t--image NAME, -i NAME\t\tImage for instances\n"
+    printf "\t--impairment NAME, -I NAME\tNetwork impairment (%s)\n" "${CLUSTER_NETWORK_IMPAIRMENTS[*]}"
+    printf "\t--vm, -v\t\t\tUse virtual machine instances\n"
     exit 1
 fi
 
@@ -78,6 +82,17 @@ if [ "${consul}" -gt "0" ] && [ -z "$(get-instances consul)" ]; then
     failure "Cluster not created with consul, cannot add new consuls"
 fi
 
+# If network impairment is requested, check that cluster
+# has network isolation enabled
+if [ -n "${impairment}" ]; then
+    info "Verifying network impairment support..."
+    cluster-must-have-isolated-network
+    detail "Checking requested impairment name is valid"
+    if ! is-network-impairment-valid "${impairment}"; then
+        failure "Invalid network impairment name provided - %s" "${impairment}"
+    fi
+fi
+
 # Create an identifier for this run that
 # will prevent name collisions so we can
 # be lazy about naming
@@ -85,35 +100,56 @@ ident="$(date '+%s' | sha256sum)"
 ident="${ident:0:4}"
 
 pids=()
+consul_pids=()
+instance_names=()
 
 # Start with adding any new consuls
 if [ "${consul}" -gt "0" ]; then
-    info "Adding %d new consul server instances..."
+    info "Adding %d new consul server instances..." "${consul}"
     for ((idx=0; idx<"${consul}"; idx++)); do
-        launch-consul-server-instance "consul-${ident}${idx}" "3" &
-        pids+=("${!}")
+        name="consul-${ident}${idx}"
+        launch-consul-server-instance "${name}" "3" &
+        instance_names+=("${name}")
+        consul_pids+=("${!}")
     done
 fi
 
 # Add any new nomad servers
 if [ "${servers}" -gt "0" ]; then
-    info "Adding %d new server instances..."
+    info "Adding %d new server instances..." "${servers}"
     for ((idx=0; idx<"${servers}"; idx++)); do
-        launch-nomad-server-instance "server-${ident}${idx}" "3" &
+        name="server-${ident}${idx}"
+        launch-nomad-server-instance "${name}" "3" &
+        instance_names+=("${name}")
         pids+=("${!}")
     done
 fi
 
 # Add any new nomad clients
 if [ "${clients}" -gt "0" ]; then
-    info "Adding %d new client instances..."
+    info "Adding %d new client instances..." "${clients}"
     for ((idx=0; idx<"${clients}"; idx++)); do
-        launch-nomad-client-instance "client-${ident}${idx}" &
+        name="client-${ident}${idx}"
+        launch-nomad-client-instance "${name}" &
+        instance_names+=("${name}")
         pids+=("${!}")
     done
 fi
 
 result=""
+
+if [ "${consul}" -gt "0" ]; then
+    for pid in "${consul_pids[@]}"; do
+        if ! wait "${pid}"; then
+            result="1"
+        fi
+    done
+
+    for ((idx=0; idx<"${consul}"; idx++)); do
+        update-consul-token "consul-${ident}${idx}"
+        pids+=("${!}")
+    done
+fi
 
 for pid in "${pids[@]}"; do
     if ! wait "${pid}"; then
@@ -121,6 +157,22 @@ for pid in "${pids[@]}"; do
     fi
 done
 
+# After instances are created and configured, apply
+# network impairments if requested
+if [ -n "${impairment}" ]; then
+    pids=()
+    for instance in "${instance_names[@]}"; do
+        impair-instance-network "${instance}" "${impairment}" &
+        pids+=("${!}")
+    done
+
+    for pid in "${pids[@]}"; do
+        if ! wait "${pid}"; then
+            result="1"
+        fi
+    done
+fi
+
 if [ -n "${result}" ]; then
-    failure "Unexpected failure encountered while adding new instances"
+    failure "Unexpected failure encountered while adding new instance(s)"
 fi

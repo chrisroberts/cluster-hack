@@ -1,4 +1,3 @@
-
-connect {
+vault {
   enabled = true
 }

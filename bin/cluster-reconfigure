@@ -42,6 +42,8 @@ cluster-must-exist
 
 pids=()
 
+info "Reconfiguring cluster instances..."
+
 if [ -n "${servers}" ]; then
     readarray -t list < <(get-instances server)
     for n in "${list[@]}"; do

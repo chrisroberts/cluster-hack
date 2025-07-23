@@ -30,13 +30,16 @@ if [ -n "${help}" ]; then
     exit 1
 fi
 
-if [ -n "${cacher}" ] && cluster-cacher-exists; then
+if [ -n "${cacher}" ] && is-cacher-enabled; then
+    debug "deleting apt cacher instance"
     delete-instance "${CLUSTER_CACHER_INSTANCE}"
 fi
 
 cluster-must-exist
 
 if [ "${#}" -lt "1" ]; then
+    debug "deleting full cluster"
+    full_delete="1"
     instance_list="$(get-instances)"
     readarray -t instances < <(printf "%s" "${instance_list}")
 else
@@ -55,5 +58,17 @@ for pid in "${pids[@]}"; do
         result=1
     fi
 done
+
+if is-cluster-network-enabled; then
+    if ! destroy-cluster-network; then
+        result=1
+    fi
+fi
+
+# Delete the data directory if it's around
+if [ -n "${full_delete}" ] && [ -d "${CLUSTER_DATA_DIR}" ]; then
+    debug "deleting local data directory"
+    rm -rf "${CLUSTER_DATA_DIR}"
+fi
 
 exit "${result}"

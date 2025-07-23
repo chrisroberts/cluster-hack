@@ -1,0 +1,5 @@
+acl {
+  tokens {
+    default = "%TOKEN%"
+  }
+}

@@ -56,59 +56,124 @@ fi
 
 cluster-must-exist
 
-pids=()
-if [ -n "${servers}" ]; then
-    readarray -t list < <(get-instances "server")
-    for i in "${list[@]}"; do
-        stream-logs "${i}" &
-        pids+=("${!}")
-    done
-fi
+declare -A streaming
+declare -A streaming_consul_clients
+run="1"
 
-if [ -n "${clients}" ]; then
-    readarray -t list < <(get-instances "client")
-    for i in "${list[@]}"; do
-        stream-logs "${i}" &
-        pids+=("${!}")
+function cleanup() {
+    info "Cleaning up log streaming processes..."
+    unset run
+    for key in "${!streaming[@]}"; do
+        pid="${streaming[${key}]}"
+        if ! kill -0 "${pid}" > /dev/null 2>&1; then
+            pkill -TERM -P "${pid}" > /dev/null
+            wait "${pid}"
+        fi
     done
-fi
+    for key in "${!streaming_consul_clients[@]}"; do
+        pid="${streaming_consul_clients[${key}]}"
+        if ! kill -0 "${pid}" > /dev/null 2>&1; then
+            pkill -TERM -P "${pid}" > /dev/null
+            wait "${pid}"
+        fi
+    done
+}
 
-if [ -n "${consuls}" ]; then
-    readarray -t list < <(get-instances "consul")
-    for i in "${list[@]}"; do
-        stream-logs "${i}" &
-        pids+=("${!}")
-    done
-fi
+trap cleanup EXIT
 
-if [ -n "${consul_clients}" ]; then
-    instances=()
-    readarray -t list < <(get-instances "server")
-    instances+=("${list[@]}")
-    readarray -t list < <(get-instances "client")
-    instances+=("${list[@]}")
-    for i in "${instances[@]}"; do
-        stream-logs "${i}" "consul" &
-        pids+=("${!}")
-    done
-fi
+function start-log-streaming() {
+    if [ -n "${servers}" ]; then
+        readarray -t list < <(get-instances "server")
+        for i in "${list[@]}"; do
+            if [ -n "${streaming[${i}]}" ]; then
+                continue
+            fi
+            stream-logs "${i}" &
+            streaming["${i}"]="${!}"
+        done
+    fi
 
-if [ -n "${vaults}" ]; then
-    instances=()
-    readarray -t list < <(get-instances "vault")
-    instances+=("${list[@]}")
-    for i in "${instances[@]}"; do
-        stream-logs "${i}" &
-        pids+=("${!}")
+    if [ -n "${clients}" ]; then
+        readarray -t list < <(get-instances "client")
+        for i in "${list[@]}"; do
+            if [ -n "${streaming[${i}]}" ]; then
+                continue
+            fi
+            stream-logs "${i}" &
+            streaming["${i}"]="${!}"
+        done
+    fi
+
+    if [ -n "${consuls}" ]; then
+        readarray -t list < <(get-instances "consul")
+        for i in "${list[@]}"; do
+            if [ -n "${streaming[${i}]}" ]; then
+                continue
+            fi
+            stream-logs "${i}" &
+            streaming["${i}"]="${!}"
+        done
+    fi
+
+    if [ -n "${consul_clients}" ]; then
+        instances=()
+        readarray -t list < <(get-instances "server")
+        instances+=("${list[@]}")
+        readarray -t list < <(get-instances "client")
+        instances+=("${list[@]}")
+        readarray -t list < <(get-instances "vault")
+        instances+=("${list[@]}")
+        for i in "${instances[@]}"; do
+            if [ -n "${streaming_consul_clients[${i}]}" ]; then
+                continue
+            fi
+            stream-logs "${i}" "consul" &
+            streaming_consul_clients["${i}"]="${!}"
+        done
+    fi
+
+    if [ -n "${vaults}" ]; then
+        instances=()
+        readarray -t list < <(get-instances "vault")
+        instances+=("${list[@]}")
+        for i in "${instances[@]}"; do
+            if [ -n "${streaming[${i}]}" ]; then
+                continue
+            fi
+            stream-logs "${i}" &
+            streaming["${i}"]="${!}"
+        done
+    fi
+}
+
+function prune-pids() {
+    for key in "${!streaming[@]}"; do
+        pid="${streaming[${key}]}"
+        if ! kill -0 "${pid}" > /dev/null 2>&1; then
+            wait "${pid}"
+            unset streaming["${key}"]
+        fi
     done
-fi
+    for key in "${!streaming_consul_clients[@]}"; do
+        pid="${streaming_consul_clients[${key}]}"
+        if ! kill -0 "${pid}" > /dev/null 2>&1; then
+            wait "${pid}"
+            unset streaming_consul_clients["${key}"]
+        fi
+    done
+
+    if [ "${#streaming[@]}" == "0" ] && [ "${#streaming_consul_clients[@]}" == "0" ]; then
+        unset run
+    fi
+}
 
 for i in "${@}"; do
     stream-logs "${i}" &
-    pids+=("${!}")
+    streaming["${i}"]="${!}"
 done
 
-# Just wait here until everything is done
-for pid in "${pids[@]}"; do
-    wait "${pid}"
+while [ -n "${run}" ]; do
+    prune-pids
+    start-log-streaming
+    sleep 5
 done

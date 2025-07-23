@@ -1,0 +1,4 @@
+{
+  "jwks_url": "http://%ADDR%:4646/.well-known/jwks.json",
+  "default_role": "nomad-workloads"
+}

@@ -1,5 +1,5 @@
 datacenter           = "dc1"
-bind_addr            = "0.0.0.0"
+bind_addr            = "%ADDR%"
 data_dir             = "/opt/nomad/data"
 plugin_dir           = "/opt/nomad/plugins"
 disable_update_check = true

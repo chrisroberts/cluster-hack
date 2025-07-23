@@ -194,14 +194,19 @@ if [ "${vaults_paused}" -gt "0" ]; then
     vlt_stat+=("$(printf "(%d %bpaused%b)" "${vaults_paused}" "${TEXT_YELLOW}" "${TEXT_CLEAR}")")
 fi
 
-
 printf "» Nomad servers: %d instances %s\n" "${servers}" "${srv_stat[*]}"
 printf "» Nomad clients: %d instances %s\n" "${clients}" "${clnt_stat[*]}"
 
-if cluster-cacher-exists; then
-    printf "%b•%b cacher: %benabled%b\n" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${TEXT_GREEN}" "${TEXT_CLEAR}"
+if is-cacher-enabled; then
+    printf "%b•%b apt cacher: %benabled%b\n" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${TEXT_GREEN}" "${TEXT_CLEAR}"
 else
-    printf "%b•%b cacher: %bdisabled%b\n" "${TEXT_RED}" "${TEXT_CLEAR}" "${TEXT_RED}" "${TEXT_CLEAR}"
+    printf "%b•%b apt cacher: %bdisabled%b\n" "${TEXT_RED}" "${TEXT_CLEAR}" "${TEXT_RED}" "${TEXT_CLEAR}"
+fi
+
+if is-cluster-network-enabled; then
+    printf "%b•%b isolated network: %benabled%b (%s)\n" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${TEXT_GREEN}" "${TEXT_CLEAR}" "${CLUSTER_NETWORK}"
+else
+    printf "%b•%b isolated network: %bdisabled%b\n" "${TEXT_RED}" "${TEXT_CLEAR}" "${TEXT_RED}" "${TEXT_CLEAR}"
 fi
 
 if [ "${consuls}" -gt "0" ]; then

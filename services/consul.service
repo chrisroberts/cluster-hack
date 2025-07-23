@@ -5,6 +5,7 @@ Requires=network-online.target
 After=network-online.target
 
 [Service]
+Environment=PATH=/cluster-bins:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=-/etc/consul/consul.env
 User=root
 Group=root
