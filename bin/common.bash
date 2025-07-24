@@ -691,7 +691,7 @@ function server-nomad-discovery() {
     local name="${1?Name of server required}"
     local instance srv
     instance="$(name-to-instance "${name}")" || exit
-    srv="$(get-instance-of "server")" || exit
+    srv="$(get-instance-of "server" "${instance}" )" || exit
     local addr
     addr="$(get-instance-address "${srv}")" || exit
 
@@ -1321,6 +1321,10 @@ function install-bins() {
     local name="${1?Name of server required}"
     local instance bins bin
     instance="$(name-to-instance "${name}")" || exit
+    local copy="copy"
+    if is-instance-container "${instance}"; then
+        copy=""
+    fi
 
     detail "installing binaries on %s" "${instance}"
     incus exec "${instance}" -- mkdir -p /cluster-bins ||
@@ -1331,14 +1335,32 @@ function install-bins() {
         # need to ensure the path is clear if the bin already
         # exists and is in use
         incus exec "${instance}" -- rm -f "/cluster-bins/${bin}"
-        incus exec "${instance}" -- cp "/nomad/bin/${bin}" "/cluster-bins/${bin}" ||
-            failure "Could not install %s on %s" "${bin}" "${instance}"
-        # if the bin is vault update capabilities
-        if [ "${bin}" == "vault" ]; then
-            incus exec "${instance}" -- setcap cap_ipc_lock=+ep "/cluster-bins/${bin}" ||
-                failure "Could not adjust capabilities on vault binary"
+        if [ -n "${copy}" ]; then
+            incus exec "${instance}" -- cp "/nomad/bin/${bin}" "/cluster-bins/${bin}" ||
+                failure "Could not install %s on %s" "${bin}" "${instance}"
+            # if the bin is vault update capabilities
+            if [ "${bin}" == "vault" ]; then
+                incus exec "${instance}" -- setcap cap_ipc_lock=+ep "/cluster-bins/${bin}" ||
+                    failure "Could not adjust capabilities on vault binary"
+            fi
+        else
+            incus exec "${instance}" -- ln -s "/nomad/bin/${bin}" "/cluster-bins/${bin}" ||
+                failure "Could not link %s on %s" "${bin}" "${instance}"
         fi
     done
+}
+
+# Check if instance is a container
+#
+# $1 - Full name of instance
+function is-instance-container() {
+    local instance="${1?Name of instance}"
+
+    if [ "$(incus list "${instance}" --format json | jq -r '.[].type')" == "container" ]; then
+        return 0
+    fi
+
+    return 1
 }
 
 # Get an instance name for the given
@@ -1505,13 +1527,13 @@ function use-network() {
     incus exec "${instance}" -- iptables -A INPUT -i "${default_dev}" -s "${instance_addr}/8" -j REJECT ||
         failure "Could not restrict default network ingress traffic on %s" "${instance}"
     incus exec "${instance}" -- iptables -A OUTPUT -d "${instance_addr}/24" -j ACCEPT ||
-        failure "ack"
+        failure "Could not enable isolated network egress traffic on %s" "${instance}"
     incus exec "${instance}" -- iptables -A OUTPUT -d "${instance_addr}/8" -j REJECT ||
-        failure "ack"
+        failure "Could not restrict egress traffic on %s" "${instance}"
     incus exec "${instance}" -- iptables -A FORWARD -d "${instance_addr}/24" -j ACCEPT ||
-        failure "ack"
+        failure "Could not enable isolated network forward traffic on %s" "${instance}"
     incus exec "${instance}" -- iptables -A FORWARD -d "${instance_addr}/8" -j REJECT ||
-        failure "ack"
+        failure "Could not restrict forward traffic on %s" "${instance}"
 
     # Remove the default route using the default device
     local info
@@ -1730,8 +1752,9 @@ function impairment-slow() {
     detail "applying slow network impairment on %s" "${instance}"
 
     # Install the ifb module on the instance (done from host)
-    # TODO: needs to detect for container/vm (only container needs this)
-    incus config set "${instance}" linux.kernel_modules ifb
+    if is-instance-container "${instance}"; then
+        incus config set "${instance}" linux.kernel_modules ifb
+    fi
 
     # Clean before setup (don't care about errors)
     incus exec "${instance}" -- tc qdisc del dev "${dev}" root > /dev/null 2>&1
