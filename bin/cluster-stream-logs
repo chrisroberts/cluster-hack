@@ -65,18 +65,18 @@ function cleanup() {
     unset run
     for key in "${!streaming[@]}"; do
         pid="${streaming[${key}]}"
-        if ! kill -0 "${pid}" > /dev/null 2>&1; then
-            pkill -TERM -P "${pid}" > /dev/null
-            wait "${pid}"
+        if kill -0 "${pid}" > /dev/null 2>&1; then
+            pkill -TERM -P "${pid}" > /dev/null &
         fi
     done
     for key in "${!streaming_consul_clients[@]}"; do
         pid="${streaming_consul_clients[${key}]}"
-        if ! kill -0 "${pid}" > /dev/null 2>&1; then
-            pkill -TERM -P "${pid}" > /dev/null
-            wait "${pid}"
+        if kill -0 "${pid}" > /dev/null 2>&1; then
+            pkill -TERM -P "${pid}" > /dev/null &
         fi
     done
+
+    wait
 }
 
 trap cleanup EXIT
@@ -173,7 +173,7 @@ for i in "${@}"; do
 done
 
 while [ -n "${run}" ]; do
-    prune-pids
     start-log-streaming
+    prune-pids
     sleep 5
 done
