@@ -59,16 +59,18 @@ for pid in "${pids[@]}"; do
     fi
 done
 
-if is-cluster-network-enabled; then
-    if ! destroy-cluster-network; then
-        result=1
-    fi
-fi
-
 # Delete the data directory if it's around
-if [ -n "${full_delete}" ] && [ -d "${CLUSTER_DATA_DIR}" ]; then
-    debug "deleting local data directory"
-    rm -rf "${CLUSTER_DATA_DIR}"
+if [ -n "${full_delete}" ]; then
+    if [ -d "${CLUSTER_DATA_DIR}" ]; then
+        debug "deleting local data directory"
+        rm -rf "${CLUSTER_DATA_DIR}"
+    fi
+
+    if is-cluster-network-enabled; then
+        if ! destroy-cluster-network; then
+            result=1
+        fi
+    fi
 fi
 
 exit "${result}"
