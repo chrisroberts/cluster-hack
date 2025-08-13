@@ -882,10 +882,17 @@ function connect-instance() {
 # $2 - Optional service name
 function stream-logs() {
     local name="${1?Name is required}"
-    local instance
+    local instance status
     instance="$(name-to-instance "${name}")" || exit
     local instance="${1?Instance name is required}"
     local service_name="${2}"
+
+    status="$(status-instance "${instance}")" || exit
+
+    # If the instance is not currently running, nothing to do
+    if [ "${status}" != "running" ]; then
+        return
+    fi
 
     if [ -z "${service_name}" ]; then
         case "${instance}" in
@@ -1095,7 +1102,7 @@ function install-cni-plugins() {
         failure "Could not unpack nomad consul CNI plugin on instance -%s" "${instance}"
 
     # Check that bridge module is available, load if not
-    if ! grep "bridge " /proc/modules ; then
+    if ! grep "bridge " /proc/modules > /dev/null; then
         warn "Bridge kernel module not found, loading on - %s" "${instance}"
         incus exec "${instance}" -- modprobe bridge ||
             failure "Could not load bridge kernel module on - %s" "${instance}"
@@ -1420,11 +1427,21 @@ function get-instance-address() {
     local instance
     instance="$(name-to-instance "${name}" "novalidate")" || exit
 
-    local result address network
+    local result address network retried
     network="$(cluster-network)" || exit
-    result="$(incus network list-leases "${network}" --format json)" ||
-        failure "Could not list network leases for address lookup on %s" "${instance}"
-    address="$(printf "%s" "${result}" | jq -r '.[] | select(.hostname == "'"${instance}"'") | select(.address | contains(".")) | .address')"
+
+    # The address might not have made it to the leases list if the
+    # instance was just created. If retrying, force a wait to allow
+    # the information to be made available.
+    while [ -z "${retried}" ]; do
+        if [ -n "${result}" ]; then
+            retried="1"
+            sleep 1
+        fi
+        result="$(incus network list-leases "${network}" --format json)" ||
+            failure "Could not list network leases for address lookup on %s" "${instance}"
+        address="$(printf "%s" "${result}" | jq -r '.[] | select(.hostname == "'"${instance}"'") | select(.address | contains(".")) | .address')"
+    done
     if [ -z "${address}" ]; then
         failure "Could not determine address for instance %s" "${instance}"
     fi
@@ -1476,7 +1493,7 @@ function use-network() {
 
     info "Configuring instance for isolated cluster network - %s" "${instance}"
     # Start with attaching the network
-    incus network attach "${network}" "${instance}" ||
+    incus network attach "${network}" "${instance}" > /dev/null ||
         failure "Unable to attach network '%s' to - %s" "${instance}"
     # Determine the device
     result="$(incus list --format json)" ||
@@ -1496,10 +1513,10 @@ function use-network() {
     incus exec "${instance}" -- chmod 0600 /etc/netplan/99-cluster-hack.yaml ||
         failure "Could not adjust network file permissions on %s" "${instance}"
     # Generate the network configuration
-    incus exec "${instance}" -- netplan generate ||
+    incus exec "${instance}" -- netplan generate > /dev/null ||
         failure "Failed to generate network configuration on %s" "${instance}"
     # Apply the new network configuration
-    incus exec "${instance}" -- netplan apply ||
+    incus exec "${instance}" -- netplan apply > /dev/null ||
         failure "Failed to apply network configuration on %s" "${instance}"
     # Install iptables
     incus exec --env "DEBIAN_FRONTEND=noninteractive" "${instance}" -- apt-get install -yq iptables > /dev/null ||
