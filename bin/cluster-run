@@ -1,41 +1,52 @@
 #!/usr/bin/env bash
 # Summary: run command on cluster instance(s)
 
+# Defaults
+help=""
+servers=""
+clients=""
+consuls=""
+vaults=""
+instance=""
+
+for arg in "${@}"; do
+    shift
+    case "${arg}" in
+        "--servers") set -- "${@}" "-s" ;;
+        "--clients") set -- "${@}" "-c" ;;
+        "--consuls") set -- "${@}" "-o" ;;
+        "--vaults") set -- "${@}" "-V" ;;
+        "--instance") set -- "${@}" "-i" ;;
+        "--all") set - "${@}" "-a";;
+        "--help") set -- "${@}" "-h";;
+        *) set -- "${@}" "${arg}" ;;
+    esac
+done
+
+while getopts "scoVi:ah" opt; do
+    case "${opt}" in
+        "c") clients="1" ;;
+        "s") servers="1" ;;
+        "V") vaults="1" ;;
+        "o") consuls="1" ;;
+        "i") instance="${OPTARG}" ;;
+        "a")
+            clients="1"
+            servers="1"
+            vaults="1"
+            consuls="1"
+            ;;
+        "h") help="1" ;;
+        *) help="1" ;;
+    esac
+done
+shift $((OPTIND-1))
+
 csource="${BASH_SOURCE[0]}"
 while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
 root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
 
 . "${root}/common.bash" || exit 1
-
-for arg in "${@}"; do
-    case "${arg}" in
-        "--all" | "-a")
-            shift
-            clients="1"
-            servers="1"
-            ;;
-        "--servers" | "-s")
-            shift
-            servers="1"
-            ;;
-        "--clients" | "-c")
-            shift
-            clients="1"
-            ;;
-        "--instance" | "-i")
-            shift
-            instance="${1}"
-            shift
-            ;;
-        "--help" | "-h")
-            shift
-            help="1"
-            ;;
-        "--")
-            break
-            ;;
-    esac
-done
 
 if [ -z "${clients}" ] && [ -z "${servers}" ] && [ -z "${instance}" ]; then
     help="1"
@@ -54,26 +65,36 @@ cluster-must-exist
 
 cmd=("${@}")
 pids=()
+instances=()
+
 if [ -n "${servers}" ]; then
     readarray -t list < <(get-instances server)
-    for i in "${list[@]}"; do
-        run-command "${i}" "${cmd[@]}" &
-        pids+=("${!}")
-    done
+    instances+=("${list[@]}")
 fi
 
 if [ -n "${clients}" ]; then
     readarray -t list < <(get-instances client)
-    for i in "${list[@]}"; do
-        run-command "${i}" "${cmd[@]}" &
-        pids+=("${!}")
-    done
+    instances+=("${list[@]}")
+fi
+
+if [ -n "${consuls}" ]; then
+    readarray -t list < <(get-instances consul)
+    instances+=("${list[@]}")
+fi
+
+if [ -n "${vaults}" ]; then
+    readarray -t list < <(get-instances vault)
+    instances+=("${list[@]}")
 fi
 
 if [ -n "${instance}" ]; then
-    run-command "${instance}" "${cmd[@]}" &
-    pids=("${!}")
+    instances+=("${instance}")
 fi
+
+for i in "${instances[@]}"; do
+    run-command "${i}" "${cmd[@]}" &
+    pids+=("${!}")
+done
 
 result=0
 for pid in "${pids[@]}"; do
