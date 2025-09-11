@@ -66,7 +66,20 @@ LAUNCH_ARGS=()
 if [ -n "${vm}" ]; then
     LAUNCH_ARGS+=("--vm")
 fi
-LAUNCH_ARGS+=("--config" "limits.memory=${memory}" "--config" "limits.cpu=${cpus}" "--ephemeral" "--profile" "${PROFILE_NAME}" "images:${image}")
+
+if [ -n "${vm}" ]; then
+    LAUNCH_ARGS+=("--vm")
+fi
+
+if [ -n "${memory}" ]; then
+    LAUNCH_ARGS+=("--config" "limits.memory=${memory}")
+fi
+
+if [ -n "${cpus}" ] && [ "${cpus}" -gt 0 ]; then
+    LAUNCH_ARGS+=("--config" "limits.cpu=${cpus}")
+fi
+
+LAUNCH_ARGS+=("--ephemeral" "--profile" "${PROFILE_NAME}" "images:${image}")
 
 if [ -n "${help}" ]; then
     printf "Usage: %s [options] --servers n --clients n\n" "${SCRIPT_NAME}"

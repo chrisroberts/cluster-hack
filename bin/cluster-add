@@ -54,7 +54,16 @@ LAUNCH_ARGS=()
 if [ -n "${vm}" ]; then
     LAUNCH_ARGS+=("--vm")
 fi
-LAUNCH_ARGS+=("--config" "limits.memory=${memory}" "--config" "limits.cpu=${cpus}" "--ephemeral" "--profile" "${PROFILE_NAME}" "images:${image}")
+
+if [ -n "${memory}" ]; then
+    LAUNCH_ARGS+=("--config" "limits.memory=${memory}")
+fi
+
+if [ -n "${cpus}" ] && [ "${cpus}" -gt 0 ]; then
+    LAUNCH_ARGS+=("--config" "limits.cpu=${cpus}")
+fi
+
+LAUNCH_ARGS+=("--ephemeral" "--profile" "${PROFILE_NAME}" "images:${image}")
 
 # Check if there's anything to add
 if [ "${servers}" == "0" ] && [ "${clients}" == "0" ] && [ "${consul}" == "0" ]; then

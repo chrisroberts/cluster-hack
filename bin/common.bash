@@ -130,6 +130,8 @@ function launch-nomad-server-instance() {
     local count="${2?Count of servers required}"
 
     create-cluster-instance "${name}" || exit
+    seed-instance "${name}" "nomad-server" || exit
+    run-launchers "${name}" "nomad-server" || exit
     configure-nomad-server "${name}" "${count}" || exit
     if is-consul-enabled; then
         consul-enable "${name}" || exit
@@ -149,6 +151,8 @@ function launch-nomad-client-instance() {
     fi
 
     create-cluster-instance "${name}" || exit
+    seed-instance "${name}" "nomad-client" || exit
+    run-launchers "${name}" "nomad-client" || exit
     configure-nomad-client "${name}" || exit
     if is-consul-enabled; then
         consul-enable "${name}" || exit
@@ -168,6 +172,8 @@ function launch-consul-server-instance() {
     local count="${2?Count of servers required}"
 
     create-cluster-instance "${name}" || exit
+    seed-instance "${name}" "consul-server" || exit
+    run-launchers "${name}" "consul-server" || exit
     configure-consul-server "${name}" "${count}" || exit
 }
 
@@ -178,6 +184,8 @@ function launch-vault-server-instance() {
     local name="${1?Name of server required}"
 
     create-cluster-instance "${name}" || exit
+    seed-instance "${name}" "vault" || exit
+    run-launchers "${name}" "vault" || exit
     configure-vault-server "${name}" || exit
 }
 
@@ -411,7 +419,7 @@ function init-consul() {
         failure "Failed to execute consul ACL bootstrap on %s" "${instance}"
     fi
     debug "consul acl bootstrap result: %s" "${result}"
-    secret_id="$(printf "%s" "${result}" | jq -r '.SecretID')"
+    secret_id="$(jq -r '.SecretID' <<< "${result}")"
     if [ -z "${secret_id}" ]; then
         failure "Failed to extract secret ID from consul ACL bootstrap on %s" "${instance}"
     fi
@@ -430,7 +438,7 @@ function init-consul() {
     result="$(consul acl token create -description "Static default-instances" -format json -policy-name "default-instances")" ||
         failure "Failed to create a consul ACL token for instances"
     debug "consul acl policy instances create result: %s" "${result}"
-    secret_id="$(printf "%s" "${result}" | jq -r '.SecretID')"
+    secret_id="$(jq -r '.SecretID' <<< "${result}")"
     if [ -z "${secret_id}" ] || [ "${secret_id}" == "null" ]; then
         failure "Failed to extract secret ID from consul ACL policy for instances"
     fi
@@ -465,7 +473,7 @@ function init-nomad() {
     result="$(nomad acl bootstrap -json)" ||
         failure "Failed to execute nomad ACL bootstrap on %s" "${instance}"
     debug "nomad acl bootstrap result: %s" "${result}"
-    secret_id="$(printf "%s" "${result}" | jq -r '.SecretID')"
+    secret_id="$(jq -r '.SecretID' <<< "${result}")"
     if [ -z "${secret_id}" ] || [ "${secret_id}" == "null" ]; then
         failure "Failed to extract secret ID from nomad ACL bootstrap on %s" "${instance}"
     fi
@@ -569,9 +577,9 @@ function init-vault-server() {
     result="$(vault operator init -format=json -key-shares=1 -key-threshold=1)" ||
         failure "Failed to run vault initialization on %s" "${instance}"
     debug "vault operator init result: %s" "${result}"
-    root_token="$(printf "%s" "${result}" | jq -r '.root_token')" ||
+    root_token="$(jq -r '.root_token' <<< "${result}")" ||
         failure "Unable to extract root token on %s" "${instance}"
-    unseal_key="$(printf "%s" "${result}" | jq -r '.unseal_keys_hex[]')" ||
+    unseal_key="$(jq -r '.unseal_keys_hex[]' <<< "${result}")" ||
         failure "Unable to extract unseal key on %s" "${instance}"
 
     store-value "vault-root-token" "${root_token}" || exit
@@ -585,7 +593,7 @@ function init-vault-server() {
     local result
     for (( i=0; i < 10; i++ )); do
         result="$(vault status -format json)"
-        if [ "$(printf "%s" "${result}" | jq -r '.sealed')" == "false" ] && [ "$(printf "%s" "${result}" | jq -r '.ha_mode')" == "active" ]; then
+        if [ "$(jq -r '.sealed' <<< "${result}")" == "false" ] && [ "$(jq -r '.ha_mode' <<< "${result}")" == "active" ]; then
             break
         fi
         sleep 0.5
@@ -607,7 +615,7 @@ function init-vault-server() {
             failure "Could not create consul token for vault integration"
         debug "consul acl token create for global-management result: %s" "${result}"
         local token
-        token="$(printf "%s" "${result}" | jq -r '.SecretID')"
+        token="$(jq -r '.SecretID' <<< "${result}")"
         if [ -z "${token}" ] || [ "${token}" == "null" ]; then
             failure "Could not extract consul token for vault integration"
         fi
@@ -884,7 +892,6 @@ function stream-logs() {
     local name="${1?Name is required}"
     local instance status
     instance="$(name-to-instance "${name}")" || exit
-    local instance="${1?Instance name is required}"
     local service_name="${2}"
 
     status="$(status-instance "${instance}")" || exit
@@ -1063,7 +1070,7 @@ function install-cni-plugins() {
             tmp="$(mktemp)" || failure "Could not create temporary file"
             pattern="$(printf '.assets[] | select(.name | contains("linux")) | select(.name | contains("%s")) | select(.name | endswith("tgz")) | .browser_download_url' "${arch}")"
             download_url="$(curl -Sslf https://api.github.com/repos/containernetworking/plugins/releases/latest | jq -r "${pattern}")"
-            printf "Downloading from: %s\n" "${download_url}"
+            detail "Downloading from: %s" "${download_url}"
             if [ -z "${download_url}" ]; then
                 failure "Could not locate CNI plugins download URL"
             fi
@@ -1120,7 +1127,7 @@ function consul-instance-token() {
     if [ -z "${force_consul_token}" ] && is-vault-enabled; then
         local result token
         result="$(vault read -format json consul/creds/default-instances)"
-        token="$(printf "%s" "${result}" | jq -r '.data.token')"
+        token="$(jq -r '.data.token' <<< "${result}")"
         if [ -z "${token}" ] || [ "${token}" == "null" ]; then
             failure "Could not generate consul default instance token from vault\n%s" "${result}"
         fi
@@ -1230,13 +1237,13 @@ function status-instance() {
     local info
     info="$(incus list "${instance}" --format json)" ||
         failure "Could not get info for %s" "${instance}"
-    info="$(printf "%s" "${info}" | jq -r '.[].status')" ||
+    info="$(jq -r '.[].status' <<< "${info}")" ||
         failure "Could not process info for %s" "${instance}"
     if [ -z "${info}" ]; then
         failre "Could not get status for instance %s" "${instance}"
     fi
 
-    info="$(printf "%s" "${info}" | awk '{print tolower($0)}')" ||
+    info="$(awk '{print tolower($0)}' <<< "${info}")" ||
         failure "Could not format status for instance %s" "${instance}"
 
     printf "%s" "${info}"
@@ -1257,6 +1264,77 @@ function get-instance-display-status() {
     esac
 }
 
+# Execute any launcher scripts for instance
+#
+# $1 - Name of instance
+# $2 - Type of launcher (subdirectory in ./cluster/launchers)
+function run-launchers() {
+    local name="${1?Name of instance required}"
+    local type="${2?Type of launcher required}"
+    local instance
+    instance="$(name-to-instance "${name}")" || exit
+    instance_type="container"
+    if ! is-instance-container "${instance}"; then
+        instance_type="vm"
+    fi
+
+    local launcher_dir="./cluster/launchers/${type}"
+    if [ ! -d "${launcher_dir}" ]; then
+        return 0
+    fi
+
+    local files=("${launcher_dir}/"*)
+    local file
+    for file in "${files[@]}"; do
+        if [ ! -f "${file}" ] || [ ! -e "${file}" ]; then
+            debug "Skipping launcher path '%s' - not file or not executable" "${file}"
+            continue
+        fi
+
+        detail "running launcher '%s' on %s" "${file}" "${instance}"
+        "${file}" "${instance}" "${instance_type}" ||
+            failure "Failed to execute launcher script '%s' on %s" "${file}" "${instance}"
+    done
+}
+
+# Execute seed scripts on instance
+#
+# $1 - Name of instance
+# $2 - Type of seeds (subdirectory in ./cluster/seeds)
+function seed-instance() {
+    local name="${1?Name of instance required}"
+    local type="${2?Type of seed required}"
+    local instance
+    instance="$(name-to-instance "${name}")" || exit
+    local instance_type="container"
+    if ! is-instance-container "${instance}"; then
+        instance_type="vm"
+    fi
+
+    local seed_dir="./cluster/seeds/${type}"
+
+    if [ ! -d "${seed_dir}" ]; then
+        return 0
+    fi
+    local files=("${seed_dir}/"*)
+    local file
+    for file in "${files[@]}"; do
+        if [ ! -f "${file}" ]; then
+            continue
+        fi
+        detail "executing seed file on %s - %s" "${instance}" "${file}"
+
+        local remote="/tmp/$(random-string)"
+        incus file push "${file}" "${instance}${remote}" > /dev/null ||
+            failure "Could not upload seed file %s on %s" "${file}" "${instance}"
+        incus exec "${instance}" -- chmod a+x "${remote}" ||
+            failure "Could not make seed file '%s' executable on %s" "${file}" "${instance}"
+        incus exec "${instance}" -- "${remote}" "${instance_type}" ||
+            failure "Failed to execute seed file '%s' on %s" "${file}" "${instance}"
+        incus exec "${instance}" -- rm -f "${remote}"
+    done
+}
+
 # Apply user defined configurations for service
 #
 # $1 - Name of instance
@@ -1266,7 +1344,7 @@ function apply-user-configs() {
     local name="${1?Name of instance required}"
     local service="${2?Name of service required}"
     local type="${3}"
-    local local_path="./config/${service}"
+    local local_path="./cluster/config/${service}"
 
     files=("${local_path}"/*.hcl)
     if [ ! -f "${files[0]}" ]; then
@@ -1317,42 +1395,66 @@ function start-service() {
 
 # Install files from the nomad bin directory
 # into the instance
-# NOTE: Thesre are copied into the instance,
-# not called directly through the shared
-# mount. This is because executing the
-# binaries on a VM instance will fail.
 #
+# NOTE: If the instance is a VM the files will
+# be copied since executable files cannot be
+# called directly on the shared mount. If the
+# instance is a container, the files will just
+# be linked (which is much faster).
 #
 # $1 - Name of instance
 function install-bins() {
     local name="${1?Name of server required}"
-    local instance bins bin
+    local instance link
     instance="$(name-to-instance "${name}")" || exit
-    local copy="copy"
     if is-instance-container "${instance}"; then
-        copy=""
+        link="link"
     fi
 
     detail "installing binaries on %s" "${instance}"
-    incus exec "${instance}" -- mkdir -p /cluster-bins ||
-        failure "Could not create cluster-bins directory on %s" "${instance}"
-    mapfile -t bins <<< "$(incus exec "${instance}" -- ls /nomad/bin)" ||
-        failure "Could not read available bins to install on %s" "${instance}"
-    for bin in "${bins[@]}"; do
-        # need to ensure the path is clear if the bin already
-        # exists and is in use
-        incus exec "${instance}" -- rm -f "/cluster-bins/${bin}"
-        if [ -n "${copy}" ]; then
-            incus exec "${instance}" -- cp "/nomad/bin/${bin}" "/cluster-bins/${bin}" ||
-                failure "Could not install %s on %s" "${bin}" "${instance}"
-            # if the bin is vault update capabilities
-            if [ "${bin}" == "vault" ]; then
-                incus exec "${instance}" -- setcap cap_ipc_lock=+ep "/cluster-bins/${bin}" ||
-                    failure "Could not adjust capabilities on vault binary"
-            fi
+
+    # scrub the directory before populating
+    incus exec "${instance}" -- rm -rf "/cluster-bins" ||
+        failure "Cannot remove /cluster-bins directory"
+    # install all the binaries
+    install-dir "${instance}" "/nomad/bin" "/cluster-bins" "${link}"
+}
+
+# Helper function to install files from source
+# directory to destination directory. If link
+# is set files will be symlinked instead of
+# copied.
+#
+# $1 - Name of instance
+# $2 - Source directory
+# $3 - Destination directory
+# $4 - Use symlinks instead of copy
+function install-dir() {
+    local instance="${1?Name of instance required}"
+    local src="${2?Source directory required}"
+    local dst="${3?Destination directory required}"
+    local link="${4}"
+
+    local listing bin
+    mapfile -t listing <<< "$(incus exec "${instance}" -- ls "${src}")"
+    incus exec "${instance}" -- mkdir -p "${dst}" ||
+        failure "Could not create directory - %s" "${dst}"
+    for bin in "${listing[@]}"; do
+        if incus exec "${instance}" -- test -d "${src}/${bin}"; then
+            install-dir "${instance}" "${src}/${bin}" "${dst}/${bin}" "${link}" ||
+                failure "Could not install directory %s" "${src}/${bin}"
         else
-            incus exec "${instance}" -- ln -s "/nomad/bin/${bin}" "/cluster-bins/${bin}" ||
-                failure "Could not link %s on %s" "${bin}" "${instance}"
+            if [ -n "${link}" ]; then
+                incus exec "${instance}" -- ln -s "${src}/${bin}" "${dst}/${bin}" ||
+                    failure "Could not link %s to %s" "${src}/${bin}" "${dst}/${bin}"
+            else
+                incus exec "${instance}" -- cp "${src}/${bin}" "${dst}/${bin}" ||
+                    failure "Could not copy %s to %s" "${src}/${bin}" "${dst}/${bin}"
+                if [ "${bin}" == "vault" ]; then
+                    incus exec "${instance}" -- setcap cap_ipc_lock=+ep "${dst}/${bin}" ||
+                        warn "Could not adjust capabilities on vault binary"
+                fi
+            fi
         fi
     done
 }
@@ -1361,7 +1463,7 @@ function install-bins() {
 #
 # $1 - Full name of instance
 function is-instance-container() {
-    local instance="${1?Name of instance}"
+    local instance="${1?Name of instance is required}"
 
     if [ "$(incus list "${instance}" --format json | jq -r '.[].type')" == "container" ]; then
         return 0
@@ -1406,7 +1508,7 @@ function get-instances() {
     local type info instances
     type="${1}"
     info="$(incus list --format json)" || exit
-    instances="$(printf "%s" "${info}" | jq -r '.[] | select(.name | contains("'"${NOMAD_INSTANCE_PREFIX}${type}"'")) | .name')"
+    instances="$(jq -r '.[] | select(.name | contains("'"${NOMAD_INSTANCE_PREFIX}${type}"'")) | .name' <<< "${info}")"
     printf "%s" "${instances}"
 }
 
@@ -1415,7 +1517,7 @@ function get-nodes() {
     local info nodes
     info="$(nomad node status -json)" ||
         failure "Unable to list nomad nodes"
-    nodes="$(printf "%s" "${info}" | jq -r ".[].ID")"
+    nodes="$(jq -r '.[].ID' <<< "${info}")"
     printf "%s" "${nodes}"
 }
 
@@ -1440,7 +1542,7 @@ function get-instance-address() {
         fi
         result="$(incus network list-leases "${network}" --format json)" ||
             failure "Could not list network leases for address lookup on %s" "${instance}"
-        address="$(printf "%s" "${result}" | jq -r '.[] | select(.hostname == "'"${instance}"'") | select(.address | contains(".")) | .address')"
+        address="$(jq -r '.[] | select(.hostname == "'"${instance}"'") | select(.address | contains(".")) | .address' <<< "${result}")"
     done
     if [ -z "${address}" ]; then
         failure "Could not determine address for instance %s" "${instance}"
@@ -1457,7 +1559,7 @@ function default-network() {
     # Use profile default network
     result="$(incus profile list --format json)" ||
         failure "Could not list incus profiles"
-    printf "%s" "${result}" | jq -r '.[] | select(.name == "cluster-hack").devices[] | select(.network).network'
+    jq -r '.[] | select(.name == "cluster-hack").devices[] | select(.network).network' <<< "${result}"
 }
 
 # Name of the default network for the cluster. This
@@ -1467,7 +1569,7 @@ function cluster-network() {
     local result names net
     result="$(incus network list --format json)" ||
         failure "Could not list incus networks"
-    readarray -t names < <(printf "%s" "${result}" | jq -r '.[] | select(.managed).name')
+    readarray -t names < <(jq -r '.[] | select(.managed).name' <<< "${result}")
     # Check first for custom network
     for net in "${names[@]}"; do
         if [ "${net}" == "${CLUSTER_NETWORK}" ]; then
@@ -1498,11 +1600,11 @@ function use-network() {
     # Determine the device
     result="$(incus list --format json)" ||
         failure "Failed to get instance list for network use on %s" "${instance}"
-    default_dev="$(printf "%s" "${result}" | jq -r '.[] | select(.name == "'"${instance}"'").state.network | map_values(select(.addresses != []) | select(.addresses[].scope != "local")) | keys[]')"
+    default_dev="$(jq -r '.[] | select(.name == "'"${instance}"'").state.network | map_values(select(.addresses != []) | select(.addresses[].scope != "local")) | keys[]' <<< "${result}")"
     if [ -z "${default_dev}" ]; then
         failure "Could not determine default network device name for %s" "${instance}"
     fi
-    dev="$(printf "%s" "${result}" | jq -r '.[] | select(.name == "'"${instance}"'").state.network | map_values(select(.addresses == [])) | keys[]')"
+    dev="$(jq -r '.[] | select(.name == "'"${instance}"'").state.network | map_values(select(.addresses == [])) | keys[]' <<< "${result}")"
     if [ -z "${dev}" ]; then
         failure "Could not determine network device name for %s" "${instance}"
     fi
@@ -1683,7 +1785,7 @@ function impair-instance-network() {
     addr="$(get-instance-address "${instance}")" || exit
     result="$(incus list --format json)" ||
         failure "Failed to get instance list for network use on %s" "${instance}"
-    dev="$(printf "%s" "${result}" | jq -r '.[] | select(.name == "'"${instance}"'").state.network | map_values(select(.addresses[].address == "'"${addr}"'")) | keys[]')"
+    dev="$(jq -r '.[] | select(.name == "'"${instance}"'").state.network | map_values(select(.addresses[].address == "'"${addr}"'")) | keys[]' <<< "${result}")"
     if [ -z "${dev}" ]; then
         failure "Could not determine network device name for impairment on %s" "${instance}"
     fi
@@ -1857,6 +1959,24 @@ function get-value() {
     fi
 
     value="$(<"${value_path}")"
+    printf "%s" "${value}"
+}
+
+# Generate a random string value. Length
+# will default to 10 characters if no
+# length is passed.
+#
+# $1 - Length of string
+function random-string() {
+    local length="${1}"
+    if [ -z "${length}" ]; then
+        length=10
+    fi
+    local value=""
+    for _ in {0.."${length}"}; do
+        value+="$(printf "%x" $(($RANDOM%16)))"
+    done
+
     printf "%s" "${value}"
 }
 
