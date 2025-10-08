@@ -63,20 +63,23 @@ run="1"
 function cleanup() {
     info "Cleaning up log streaming processes..."
     unset run
+
     for key in "${!streaming[@]}"; do
         pid="${streaming[${key}]}"
+        debug "killing log streaming pid: %d" "${pid}"
         if kill -0 "${pid}" > /dev/null 2>&1; then
-            pkill -TERM -P "${pid}" > /dev/null &
+            kill -9 "${pid}" > /dev/null 2>&1
         fi
     done
     for key in "${!streaming_consul_clients[@]}"; do
         pid="${streaming_consul_clients[${key}]}"
+        debug "killing log streaming pid: %d" "${pid}"
         if kill -0 "${pid}" > /dev/null 2>&1; then
-            pkill -TERM -P "${pid}" > /dev/null &
+            kill -9 "${pid}" > /dev/null 2>&1;
         fi
     done
 
-    wait
+    wait > /dev/null 2>&1
 }
 
 trap cleanup EXIT
@@ -88,7 +91,7 @@ function start-log-streaming() {
             if [ -n "${streaming[${i}]}" ]; then
                 continue
             fi
-            stream-logs "${i}" &
+            stream-logs "${i}"
             streaming["${i}"]="${!}"
         done
     fi
@@ -99,7 +102,7 @@ function start-log-streaming() {
             if [ -n "${streaming[${i}]}" ]; then
                 continue
             fi
-            stream-logs "${i}" &
+            stream-logs "${i}"
             streaming["${i}"]="${!}"
         done
     fi
@@ -110,7 +113,7 @@ function start-log-streaming() {
             if [ -n "${streaming[${i}]}" ]; then
                 continue
             fi
-            stream-logs "${i}" &
+            stream-logs "${i}"
             streaming["${i}"]="${!}"
         done
     fi
@@ -127,7 +130,7 @@ function start-log-streaming() {
             if [ -n "${streaming_consul_clients[${i}]}" ]; then
                 continue
             fi
-            stream-logs "${i}" "consul" &
+            stream-logs "${i}"
             streaming_consul_clients["${i}"]="${!}"
         done
     fi
@@ -140,7 +143,7 @@ function start-log-streaming() {
             if [ -n "${streaming[${i}]}" ]; then
                 continue
             fi
-            stream-logs "${i}" &
+            stream-logs "${i}"
             streaming["${i}"]="${!}"
         done
     fi

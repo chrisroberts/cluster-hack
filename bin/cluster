@@ -12,7 +12,7 @@ if [ "${#}" -lt 1 ] || [ ! -f "${root}/cluster-${subcommand}" ]; then
     cmds=()
     for script in "${bindir[@]}"; do
         script="$(basename "${script}")"
-        if [ "${script}" == "common.bash" ] || [ "${script}" == "cluster" ]; then
+        if [[ "${script}" != "cluster-"*  ]] || [[ "${script}" == "cluster-"*"-"* ]]; then
            continue
         fi
 
