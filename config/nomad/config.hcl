@@ -9,6 +9,3 @@ log_level            = "TRACE"
 enable_syslog        = false
 log_file             = "/var/log/nomad.log"
 
-acl {
-  enabled = true
-}
