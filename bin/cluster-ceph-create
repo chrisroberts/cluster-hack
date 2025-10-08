@@ -1,0 +1,273 @@
+#!/usr/bin/env bash
+# Summary: add new ceph cluster
+
+# Defaults
+help=""
+hosts="1"
+vm=""
+cpus=""
+memory=""
+volume="10GiB"
+image="ubuntu/noble/cloud"
+admin_cpus="2"
+admin_memory="2GiB"
+default_hosts_memory="2GiB"
+default_hosts_cpus="2"
+client_username="cluster-user"
+
+for arg in "${@}"; do
+    shift
+    case "${arg}" in
+        "--hosts") set -- "${@}" "-H" ;;
+        "--vm") set -- "${@}" "-v" ;;
+        "--cpus") set -- "${@}" "-C" ;;
+        "--memory") set -- "${@}" "-m" ;;
+        "--volume") set -- "${@}" "-V" ;;
+        "--image") set -- "${@}" "-i" ;;
+        "--admin-cpus") set -- "${@}" "-a" ;;
+        "--admin-memory") set -- "${@}" "-A" ;;
+        *) set -- "${@}" "${arg}" ;;
+    esac
+done
+
+while getopts "H:vC:m:V:i:a:A:h" opt; do
+    case "${opt}" in
+        "H") hosts="${OPTARG}" ;;
+        "v") vm="1" ;;
+        "C") cpus="${OPTARG}" ;;
+        "m") memory="${OPTARG}" ;;
+        "V") volume="${OPTARG}" ;;
+        "i") image="${OPTARG}" ;;
+        "a") admin_cpus="${OPTARG}" ;;
+        "A") admin_memory="${OPTARG}" ;;
+        "h") help="1" ;;
+        *) help="1" ;;
+    esac
+done
+shift $((OPTIND-1))
+
+csource="${BASH_SOURCE[0]}"
+while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
+root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
+
+. "${root}/common.bash" || exit
+
+if [ -n "${help}" ]; then
+    printf "Usage %s [options]\n" "${SCRIPT_NAME}"
+    printf "\t--admin-cpus NUM, -a NUM\tNumber of CPUs to assign admin instance (default: 2)\n"
+    printf "\t--admin-memory MEM, -A MEM\tMemory allocated to admin instance (default: 2GiB)\n"
+    printf "\t--cpus NUM, -C NUM\t\tNumber of CPUs to assign instances\n"
+    printf "\t--hosts NUM, -H NUM\t\tNumber of host instances (default: 1)\n"
+    printf "\t--memory MEM, -m MEM\t\tMaximum memory allocated\n"
+    printf "\t--image NAME, -i NAME\t\tImage for instances\n"
+    printf "\t--volume SIZE, -V SIZE\t\tSize of block device for pool\n"
+    printf "\t--vm, -v\t\t\tUse virtual machines for all instances\n"
+    exit 1
+fi
+
+# Base cluster must exist before creating
+# ceph cluster
+#cluster-must-exist
+
+# Check if ceph cluster already exists
+if [ -n "$(get-instances "ceph")" ]; then
+    failure "Ceph cluster already exists"
+fi
+
+# Launch arguments for admin instance
+admin_args=("--vm" "--config" "limits.memory=${admin_memory}"
+            "--config" "limits.cpu=${admin_cpus}" "--ephemeral"
+            "--profile" "${PROFILE_NAME}" "images:${image}")
+
+# Launch arguments for host instance(s)
+host_args=()
+host_info=()
+if [ -n "${vm}" ]; then
+    host_args+=("--vm")
+    host_info+=("virtual machine")
+    if [ -z "${memory}" ]; then
+        memory="${default_hosts_memory}"
+    fi
+    if [ -z "${cpus}" ]; then
+        cpus="${default_hosts_cpus}"
+    fi
+fi
+
+if [ -n "${memory}" ]; then
+    host_args+=("--config" "limits.memory=${memory}")
+    host_info+=("${memory} memory")
+fi
+
+if [ -n "${cpus}" ] && [ "${cpus}" -gt 0 ]; then
+    host_args+=("--config" "limits.cpu=${cpus}")
+    host_info+=("${cpus} cpus")
+fi
+host_args+=("--ephemeral" "--profile" "${PROFILE_NAME}" "images:${image}")
+
+if [ "${#host_info[@]}" -gt "0" ]; then
+    host_extra="- ${host_info[*]}"
+fi
+
+info "Creating new Ceph storage cluster"
+detail "admin instance - %d cpus / %s memory (virtual machine)" "${admin_cpus}" "${admin_memory}"
+detail "host instances - %d %s" "${hosts}" "${host_extra}"
+detail "volumes size for pool - %s" "${volume}"
+
+# Start with creating the admin instance
+LAUNCH_ARGS=("${admin_args[@]}")
+admin_instance="${CLUSTER_INSTANCE_PREFIX}ceph-admin"
+create-cluster-instance "${admin_instance}" "raw" || exit
+
+detail "Full name: %s" "${admin_instance}"
+
+if is-cacher-enabled; then
+    cacher-enable "${admin_instance}" || exit
+fi
+
+if is-cluster-network-enabled; then
+    use-network "${admin_instance}" "${CLUSTER_NETWORK}" || exit
+fi
+
+info "Setting up Ceph admin instance"
+
+detail "installing required packages"
+install-package "${admin_instance}" "cephadm" "ceph-common" "openssh-server" ||
+    failure "Could not install required Ceph admin packages"
+
+detail "bootstrapping admin"
+address="$(get-instance-address "${admin_instance}")" || exit
+result="$(incus exec "${admin_instance}" -- cephadm bootstrap --mon-ip "${address}")" ||
+    failure "Failed to bootstrap Ceph admin instance"
+
+debug "bootstrap result: %s" "${result}"
+
+admin_key="$(incus exec "${admin_instance}" -- cat /etc/ceph/ceph.pub)" ||
+    failure "Could not extract admin Ceph ssh key"
+
+# Extract the dashboard information
+ui_url="${result#*URL: }"
+ui_url="${ui_url%%$'\n'*}"
+ui_url="${ui_url/"${admin_instance}"/"${address}"}"
+
+ui_user="${result#*User: }"
+ui_user="${ui_user%%$'\n'*}"
+
+ui_password="${result#*Password: }"
+ui_password="${ui_password%%$'\n'*}"
+
+store-value "ceph-username" "${ui_user}"
+store-value "ceph-password" "${ui_password}"
+
+info "Creating Ceph host instance(s)"
+
+LAUNCH_ARGS=("${host_args[@]}")
+
+# Helper to allow launching and configuring host
+# instance in parallel
+function launch-ceph-host() {
+    name="${1?Name of ceph host required}"
+
+    instance="${CLUSTER_INSTANCE_PREFIX}${name}"
+    create-cluster-instance "${instance}" "raw" || exit
+
+    if is-cacher-enabled; then
+        cacher-enable "${instance}" || exit
+    fi
+
+    if is-cluster-network-enabled; then
+        use-network "${instance}" "${CLUSTER_NETWORK}" || exit
+    fi
+
+    detail "installing required packages on %s" "${name}"
+    install-package "${instance}" "openssh-server" "docker.io" "lvm2" ||
+        failure "Could not install required Ceph host packages on %s" "${name}"
+
+    detail "updating ssh config on %s" "${name}"
+    incus exec "${instance}" -- bash -c "echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config" ||
+        failure "Could not modify sshd config on %s" "${name}"
+    incus exec "${instance}" -- systemctl restart ssh ||
+        failure "Could not restart ssh daemon on %s" "${name}"
+
+    detail "installing ceph key on %s" "${name}"
+    incus exec "${instance}" -- mkdir -p /root/.ssh ||
+        failure "Failed to create ssh directory on %s" "${name}"
+    incus exec "${instance}" -- chmod 0700 /root/.ssh ||
+        failure "Failed to set permissions on ssh directory on %s" "${name}"
+
+    incus exec "${instance}" -- bash -c "echo '${admin_key}' > /root/.ssh/authorized_keys" ||
+        failure "Could not write admin Ceph ssh public key to %s" "${name}"
+    incus exec "${instance}" -- chmod 0600 /root/.ssh/authorized_keys ||
+        failure "Failed to set permissions on authorized_keys file on %s" "${name}"
+
+    detail "creating storage volumes for %s" "${name}"
+    for ((vidx=0; vidx<3; vidx++)); do
+        vol_name="${instance}-vol-${vidx}"
+        debug "creating volume %s of size %s for %s" "${vol_name}" "${volume}" "${instance}"
+        incus storage volume create "${CLUSTER_VOLUME_POOL}" "${vol_name}" size="${volume}" --type=block > /dev/null 2>&1 ||
+            failure "Failed to create block storage volume '%s' for %s" "${vol_name}" "${name}"
+        incus storage volume attach "${CLUSTER_VOLUME_POOL}" "${vol_name}" "${instance}" ||
+            failure "Could not attach volume %s to instance %s" "${vol_name}" "${name}"
+    done
+
+    address="$(get-instance-address "${instance}")" || exit
+    detail "joining host to cluster - %s" "${name}"
+    incus exec "${admin_instance}" -- ceph orch host add "${instance}" "${address}" > /dev/null ||
+        failure "Failed to join host to cluster - %s" "${name}"
+}
+
+# Launch and configure the ceph hosts
+hosts_pids=()
+for ((idx=0; idx<"${hosts}"; idx++)); do
+    name="ceph-host${idx}"
+    launch-ceph-host "${name}" &
+    hosts_pids+=("${!}")
+done
+
+# Wait for the ceph hosts to finish setting up
+hosts_result=""
+for pid in "${hosts_pids[@]}"; do
+    if ! wait "${pid}"; then
+        result="1"
+    fi
+done
+
+if [ -n "${hosts_result}" ]; then
+    failure "Failure encountered while provisioning Ceph hosts"
+fi
+
+info "Configuring Ceph cluster"
+
+detail "creating object storage daemons"
+incus exec "${admin_instance}" -- ceph orch apply osd --all-available-devices > /dev/null ||
+    failure "Could not create object storage daemons"
+
+detail "creating block device pool"
+incus exec "${admin_instance}" -- ceph osd pool create rbd 2 2 > /dev/null 2>&1 ||
+    failure "Could not create RBD pool"
+
+detail "initializing block device pool (may take a bit to complete)"
+incus exec "${admin_instance}" -- rbd pool init rbd > /dev/null ||
+    failure "Unexpected error initializing RBD pool"
+
+detail "creating default image"
+incus exec "${admin_instance}" -- rbd create --pool rbd --image default --size "${volume/iB/}" ||
+    failure "Failed to create default image in block device pool"
+
+detail "creating Ceph client user"
+incus exec "${admin_instance}" -- ceph auth add "client.${client_username}" mon "allow r" osd "allow *" > /dev/null 2>&1 ||
+    failure "Failed to create Ceph client user - %s" "${client_username}"
+
+debug "fetching client key for user %s" "${client_username}"
+client_password="$(incus exec "${admin_instance}" -- ceph auth print-key "client.${client_username}")" ||
+    failure "Could not print client key for user - %s" "${client_username}"
+
+debug "mark cluster setup status as complete for dashboard"
+incus exec "${admin_instance}" -- ceph config-key set "mgr/dashboard/cluster/status" "POST_INSTALLED" > /dev/null 2>&1 ||
+    failure "Failed to mark cluster status as complete in dashboard"
+
+store-value "ceph-client-username" "${client_username}"
+store-value "ceph-client-key" "${client_password}"
+
+success "Ceph cluster creation complete"
+detail "Dashboard: %s - Credentials: %s/%s" "${ui_url}" "${ui_user}" "${ui_password}"
+detail "Client Username: %s - Key: %s" "${client_username}" "${client_password}"

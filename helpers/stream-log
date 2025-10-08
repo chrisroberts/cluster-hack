@@ -3,4 +3,8 @@
 service_name="${1?Service name is required}"
 name="$(hostname | sed 's/nomad-cluster-[^-]*-//')"
 
-journalctl -o cat -u "${service_name}" -f | mawk -W interactive "NAME=\"${name}\" {gsub(/^ +/, \"\"); printf \"%s %s\n\", NAME, \$0}" | mawk -W interactive "SRV=\"${service_name}\" {gsub(/^ +/, \"\"); printf \"<%s> %s\n\", SRV, \$0}"
+if command -v mawk > /dev/null 2>&1; then
+    journalctl -o cat -u "${service_name}" -f | mawk -W interactive "NAME=\"${name}\" {gsub(/^ +/, \"\"); printf \"%s %s\n\", NAME, \$0}" | mawk -W interactive "SRV=\"${service_name}\" {gsub(/^ +/, \"\"); printf \"<%s> %s\n\", SRV, \$0}"
+else
+    journalctl -o cat -u "${service_name}" -f | stdbuf -o0 gawk "NAME=\"${name}\" {gsub(/^ +/, \"\"); printf \"%s %s\n\", NAME, \$0}" | stdbuf -o0 gawk "SRV=\"${service_name}\" {gsub(/^ +/, \"\"); printf \"<%s> %s\n\", SRV, \$0}"
+fi

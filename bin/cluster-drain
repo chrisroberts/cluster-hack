@@ -1,18 +1,39 @@
 #!/usr/bin/env bash
 # Summary: drain nomad jobs from cluster instance(s)
 
+# Defaults
+deadline=""
+help=""
+
+for arg in "${@}"; do
+    shift
+    case "${arg}" in
+        "--deadline") set -- "${@}" "-d" ;;
+        "--help") set -- "${@}" "-h" ;;
+        *) set -- "${@}" "${arg}" ;;
+    esac
+done
+
+while getopts "d:h" opt; do
+    case "${opt}" in
+        "d") duration="${OPTARG}" ;;
+        "h") help="1" ;;
+        *) help="1" ;;
+    esac
+done
+shift $((OPTIND-1))
+
 csource="${BASH_SOURCE[0]}"
 while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
 root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
 
 . "${root}/common.bash" || exit 1
 
-for arg in "${@}"; do
-    if [ "${arg}" == "-h" ] || [ "${arg}" == "--help" ]; then
-        printf "Usage: %s NODE[ NODE...]\n" "${SCRIPT_NAME}"
-        exit 1
-    fi
-done
+if [ -n "${help}" ] || [ "${#}" -lt 1 ]; then
+    printf "Usage: %s [options] NODE[ NODE...]\n" "${SCRIPT_NAME}"
+    printf "\t--deadline VAL, -d VAL\tSet deadline on drain\n"
+    exit 1
+fi
 
 nodes=()
 for node in "${@}"; do
@@ -23,9 +44,8 @@ info "Draining nodes - %s" "${nodes[*]}"
 
 pids=()
 for node in "${nodes[@]}"; do
-    # Convert the name if given instance names
-    node="$(name-to-node "${node}")"
-    nomad node drain -enable -yes "${node}" &
+    nomad node drain -enable -yes -deadline 5s "${node}" &
+    sleep 0.1
     pids+=("${!}")
 done
 
@@ -37,7 +57,7 @@ success "Drain of nodes complete"
 info "Re-enabling nodes eligibility..."
 
 for node in "${nodes[@]}"; do
-    nomad node eligibility -enable "${node}" > /dev/null
+    nomad node eligibility -enable "${node}" > /dev/null &
 done
 
 success "Nodes marked as eligible"

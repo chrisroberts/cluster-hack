@@ -2,7 +2,7 @@
 DIR_SHA="$(pwd | sha256sum)"
 export DIR_SHA="${DIR_SHA:0:6}"
 export CLUSTER_CACHER_INSTANCE="nomad-cluster-cacher"
-export NOMAD_INSTANCE_PREFIX="nomad-cluster-${DIR_SHA}-"
+export CLUSTER_INSTANCE_PREFIX="nomad-cluster-${DIR_SHA}-"
 export CLUSTER_NETWORK="cluster-${DIR_SHA}"
 export CLUSTER_NETWORK_IMPAIRMENTS=("slow" "very-slow" "lossy" "very-lossy" "slow-lossy" "very-slow-lossy")
 export ENVRC_HEADER="### cluster header ###"
@@ -10,6 +10,7 @@ export PROFILE_NAME="cluster-hack"
 export SCRIPT_NAME="$(basename "${0}")"
 export CLUSTER_DATA_DIR="$(pwd)/.cluster-hack"
 export INFO_DIR="${CLUSTER_DATA_DIR}/info"
+export CLUSTER_VOLUME_POOL="default"
 csource="${BASH_SOURCE[0]}"
 while [ -h "${csource}" ] ; do csource="$(readlink "${csource}")"; done
 bin_dir="$( cd -P "$( dirname "${csource}" )/" && pwd )" || exit 1
@@ -22,6 +23,15 @@ TEXT_RED='\e[31m'
 TEXT_GREEN='\e[32m'
 TEXT_YELLOW='\e[33m'
 TEXT_CYAN='\e[36m'
+TEXT_BLUE='\e[34m'
+TEXT_PURPLE='\e[35m'
+TEXT_BROWN='\e[33m'
+TEXT_GRAY='\e[37m'
+TEXT_LIGHT_RED='\e[1;31m'
+TEXT_LIGHT_GREEN='\e[1;32m'
+TEXT_LIGHT_BLUE='\e[1;34m'
+TEXT_LIGHT_PURPLE='\e[1;35m'
+TEXT_LIGHT_CYAN='\e[1;36m'
 
 HELPER_SCRIPTS=("config-scrub" "sed-helper" "stream-log")
 
@@ -64,19 +74,31 @@ function create-cluster-instance() {
         failure "Unknown argument provided for instance creation - %s" "${raw}"
     fi
 
-    if [ -z "${raw}" ] && [[ "${name}" != "${NOMAD_INSTANCE_PREFIX}"* ]]; then
-        name="${NOMAD_INSTANCE_PREFIX}${name}"
+    if [ -z "${raw}" ] && [[ "${name}" != "${CLUSTER_INSTANCE_PREFIX}"* ]]; then
+        name="${CLUSTER_INSTANCE_PREFIX}${name}"
     fi
 
     info "Launching cluster instance %s..." "${name}"
 
-    incus launch "${LAUNCH_ARGS[@]}" "${name}" > /dev/null ||
-        failure "Error encountered launching cluster instance %s" "${name}"
-    # Wait for the instance to actually be available. This will
-    # be instantly for containers, and a slight delay for vms
-    while ! incus exec "${name}" /bin/true > /dev/null 2>&1; do
-        sleep 0.1
-    done
+    if ! output="$(incus launch "${LAUNCH_ARGS[@]}" "${name}" 2>&1)"; then
+        if [[ "${output}" == *"agent:config disk"* ]]; then
+            detail "attaching agent config disk"
+            incus config device add "${name}" agent disk source=agent:config > /dev/null ||
+                failure "Error encountered adding agent disk during instance launch of %s" "${name}"
+            incus start "${name}" > /dev/null ||
+                failure "Error encountered launching cluster instance %s" "${name}"
+            wait-for-instance "${name}" || exit
+
+            detail "restarting instance to initialize agent"
+            incus restart "${name}" > /dev/null ||
+                failure "Error encountered restarting cluster instance %s" "${name}"
+            wait-for-instance "${name}" || exit
+        else
+            failure "Error encountered launching cluster instance %s\n\nReason: %s" "${name}" "${output}"
+        fi
+    fi
+
+    wait-for-instance "${name}" || exit
 
     if [ -z "${raw}" ]; then
         # The helper scripts will fail to execute from the /cluster
@@ -99,6 +121,8 @@ function create-cluster-instance() {
             use-network "${name}" "${CLUSTER_NETWORK}"
         fi
     fi
+
+    run-hook "create-cluster-instance" "post" "${name}" || exit
 
     success "Launched new cluster instance %s" "${name}"
 }
@@ -130,8 +154,6 @@ function launch-nomad-server-instance() {
     local count="${2?Count of servers required}"
 
     create-cluster-instance "${name}" || exit
-    seed-instance "${name}" "nomad-server" || exit
-    run-launchers "${name}" "nomad-server" || exit
     configure-nomad-server "${name}" "${count}" || exit
     if is-consul-enabled; then
         consul-enable "${name}" || exit
@@ -139,6 +161,8 @@ function launch-nomad-server-instance() {
         server-nomad-discovery "${name}" || exit
     fi
     start-service "${name}" "nomad"
+
+    run-hook "launch-nomad-server-instance" "post" "${name}" || exit
 }
 
 # Fully launch a nomad client instance
@@ -146,13 +170,11 @@ function launch-nomad-server-instance() {
 # $1 - Name of instance
 function launch-nomad-client-instance() {
     local name="${1?Name for client is required}"
-    if [[ "${name}" != "${NOMAD_INSTANCE_PREFIX}"* ]]; then
-        name="${NOMAD_INSTANCE_PREFIX}${name}"
+    if [[ "${name}" != "${CLUSTER_INSTANCE_PREFIX}"* ]]; then
+        name="${CLUSTER_INSTANCE_PREFIX}${name}"
     fi
 
     create-cluster-instance "${name}" || exit
-    seed-instance "${name}" "nomad-client" || exit
-    run-launchers "${name}" "nomad-client" || exit
     configure-nomad-client "${name}" || exit
     if is-consul-enabled; then
         consul-enable "${name}" || exit
@@ -161,6 +183,8 @@ function launch-nomad-client-instance() {
     fi
 
     start-service "${name}" "nomad-client" || exit
+
+    run-hook "launch-nomad-client-instance" "post" "${name}" || exit
 }
 
 # Fully launch a consul instance
@@ -172,9 +196,9 @@ function launch-consul-server-instance() {
     local count="${2?Count of servers required}"
 
     create-cluster-instance "${name}" || exit
-    seed-instance "${name}" "consul-server" || exit
-    run-launchers "${name}" "consul-server" || exit
     configure-consul-server "${name}" "${count}" || exit
+
+    run-hook "launch-consul-server-instance" "post" "${name}" || exit
 }
 
 # Fully launch a vault instance
@@ -184,9 +208,9 @@ function launch-vault-server-instance() {
     local name="${1?Name of server required}"
 
     create-cluster-instance "${name}" || exit
-    seed-instance "${name}" "vault" || exit
-    run-launchers "${name}" "vault" || exit
     configure-vault-server "${name}" || exit
+
+    run-hook "launch-vault-server-instance" "post" "${name}" || exit
 }
 
 # Configure an instance for nomad server
@@ -200,6 +224,8 @@ function configure-nomad-server() {
     addr="$(get-instance-address "${instance}" "noverify")"
     local count="${2?Count of servers required}"
 
+    run-hook "configure-nomad-server" "pre" "${instance}" || exit
+
     info "Adding base server nomad configuration (%s)..." "${instance}"
     incus exec "${instance}" -- mkdir -p /etc/nomad/config.d ||
         failure "Could not create nomad config directory on %s" "${instance}"
@@ -209,6 +235,11 @@ function configure-nomad-server() {
     incus exec "${instance}" -- /helpers/sed-helper "s/%NUM_SERVERS%/${count}/" \
         /cluster/config/nomad/server/config.hcl /etc/nomad/config.d/01-server.hcl ||
         failure "Could not modify nomad server configuration %s" "${instance}"
+
+    if is-nomad-acl-enabled; then
+        incus exec "${instance}" -- cp /cluster/config/nomad/acl.hcl /etc/nomad/config.d/01-acl.hcl ||
+            failure "Could not install nomad acl configuration on %s" "${instance}"
+    fi
 
     if is-vault-enabled ; then
         incus exec "${instance}" -- cp /cluster/config/nomad/server/vault.hcl /etc/nomad/config.d/01-vault.hcl ||
@@ -222,6 +253,8 @@ function configure-nomad-server() {
         /cluster/services/nomad.service /etc/systemd/system/nomad.service ||
         failure "Could not install nomad.service unit file into %s" "${instance}"
 
+    run-hook "configure-nomad-server" "post" "${instance}" || exit
+
     success "Base server nomad configuration applied to %s" "${instance}"
 }
 
@@ -234,8 +267,8 @@ function configure-consul-server() {
     local count="${2?Count of servers required}"
 
     local addr local_addr
-    if [[ "${name}" != "${NOMAD_INSTANCE_PREFIX}"* ]]; then
-        name="${NOMAD_INSTANCE_PREFIX}${name}"
+    if [[ "${name}" != "${CLUSTER_INSTANCE_PREFIX}"* ]]; then
+        name="${CLUSTER_INSTANCE_PREFIX}${name}"
     fi
 
     # Don't set address on initial server when
@@ -244,6 +277,8 @@ function configure-consul-server() {
         addr="$(consul-address "${name}")" || exit
     fi
     local_addr="$(get-instance-address "${name}" "noverify")"
+
+    run-hook "configure-consul-server" "pre" "${instance}" || exit
 
     info "Adding base server consul configuration (%s)..." "${name}"
     gossip_key="$(consul-gossip-key)" || exit
@@ -276,6 +311,8 @@ function configure-consul-server() {
         failure "Unable to disabled resolved on - %s" "${name}"
 
     start-service "${name}" "consul" || exit
+
+    run-hook "configure-consul-server" "post" "${instance}" || exit
 }
 
 # Configure an instance for vault server
@@ -285,6 +322,8 @@ function configure-vault-server() {
     local name="${1?Name of server required}"
     local instance
     instance="$(name-to-instance "${name}")" || exit
+
+    run-hook "configure-vault-server" "pre" "${instance}" || exit
 
     info "Configuring vault server instance - %s" "${instance}"
     incus exec "${instance}" -- mkdir -p /opt/vault/data ||
@@ -348,6 +387,8 @@ function configure-vault-server() {
         failure "Could not install vault.service unit file into %s" "${instance}"
 
     start-service "${instance}" "vault" || exit
+
+    run-hook "configure-vault-server" "post" "${instance}" || exit
 }
 
 # Configure an instance for nomad client
@@ -359,6 +400,8 @@ function configure-nomad-client() {
     instance="$(name-to-instance "${name}")" || exit
     addr="$(get-instance-address "${instance}" "noverify")" || exit
 
+    run-hook "configure-nomad-client" "pre" "${instance}" || exit
+
     info "Configuring nomad client on - %s..." "${instance}"
     incus exec "${instance}" -- mkdir -p /etc/nomad/config.d ||
         failure "Could not create nomad config directory on %s" "${instance}"
@@ -367,6 +410,10 @@ function configure-nomad-client() {
         failure "Could not install base nomad configuration on %s" "${instance}"
     incus exec "${instance}" -- cp /cluster/config/nomad/client/config.hcl /etc/nomad/config.d/01-client.hcl ||
         failure "Could not install client nomad configuration on %s" "${instance}"
+    if is-nomad-acl-enabled; then
+        incus exec "${instance}" -- cp /cluster/config/nomad/acl.hcl /etc/nomad/config.d/01-acl.hcl ||
+            failure "Could not install nomad acl configuration on %s" "${instance}"
+    fi
 
     apply-user-configs "${instance}" "nomad" "client" || exit
 
@@ -384,11 +431,17 @@ function configure-nomad-client() {
             failure "Could not install nomad vault configuration on %s" "${instance}"
     fi
 
+    if is-nomad-cni-enabled; then
+        install-cni-plugins "${instance}" || exit
+    fi
+
     incus exec "${instance}" -- /helpers/sed-helper "s/%NOMAD_NAME%/nomad-client/" \
         /cluster/services/nomad.service /etc/systemd/system/nomad-client.service ||
         failure "Could not install nomad-client.service unit file into %s" "${instance}"
 
     success "Base client nomad configuration applied to %s" "${instance}"
+
+    run-hook "configure-nomad-client" "post" "${instance}" || exit
 }
 
 # Initializes consul. Performs ACL bootstrap and
@@ -399,6 +452,8 @@ function init-consul() {
     local name="${1?Name of consul instance required}"
     local instance
     instance="$(name-to-instance "${name}")" || exit
+
+    run-hook "init-consul" "pre" "${instance}" || exit
 
     info "Initializing consul..."
     local addr
@@ -451,6 +506,8 @@ function init-consul() {
     done
 
     detail "consul ACL policy for instances created"
+
+    run-hook "init-consul" "post" "${instance}" || exit
 }
 
 # Initializes nomad. This bootstraps
@@ -463,87 +520,93 @@ function init-nomad() {
     local instance
     instance="$(name-to-instance "${name}")" || exit
 
+    run-hook "init-nomad" "pre" "${instance}" || exit
+
     info "Initializing nomad..."
-    local addr
-    addr="$(get-instance-address "${instance}")" || exit
-    unset NOMAD_TOKEN # NOTE: this might be set with old value via direnv
-    export NOMAD_ADDR="http://${addr}:4646"
+    if is-nomad-acl-enabled; then
+        local addr
+        addr="$(get-instance-address "${instance}")" || exit
+        unset NOMAD_TOKEN # NOTE: this might be set with old value via direnv
+        export NOMAD_ADDR="http://${addr}:4646"
 
-    local result secret_id
-    result="$(nomad acl bootstrap -json)" ||
-        failure "Failed to execute nomad ACL bootstrap on %s" "${instance}"
-    debug "nomad acl bootstrap result: %s" "${result}"
-    secret_id="$(jq -r '.SecretID' <<< "${result}")"
-    if [ -z "${secret_id}" ] || [ "${secret_id}" == "null" ]; then
-        failure "Failed to extract secret ID from nomad ACL bootstrap on %s" "${instance}"
-    fi
-    store-value "nomad-root-token" "${secret_id}" || exit
+        local result secret_id
+        result="$(nomad acl bootstrap -json)" ||
+            failure "Failed to execute nomad ACL bootstrap on %s" "${instance}"
+        debug "nomad acl bootstrap result: %s" "${result}"
+        secret_id="$(jq -r '.SecretID' <<< "${result}")"
+        if [ -z "${secret_id}" ] || [ "${secret_id}" == "null" ]; then
+            failure "Failed to extract secret ID from nomad ACL bootstrap on %s" "${instance}"
+        fi
+        store-value "nomad-root-token" "${secret_id}" || exit
 
-    export NOMAD_TOKEN="${secret_id}"
+        export NOMAD_TOKEN="${secret_id}"
 
-    detail "ACL system bootstrapped"
+        detail "ACL system bootstrapped"
 
-    nomad acl policy apply -description "anonymous policy" anonymous "${root_dir}/extras/nomad/policies/anonymous.hcl" > /dev/null ||
-        failure "Could not apply anonymous ACL policy to nomad"
+        nomad acl policy apply -description "anonymous policy" anonymous "${root_dir}/extras/nomad/policies/anonymous.hcl" > /dev/null ||
+            failure "Could not apply anonymous ACL policy to nomad"
 
-    detail "Anonymous ACL policy applied"
+        detail "Anonymous ACL policy applied"
 
-    if is-vault-enabled ; then
-        local vaddr
-        vaddr="$(vault-address)" || exit
-        secret_id="$(get-value "vault-root-token")" || exit
-        export VAULT_ADDR="https://${vaddr}:8200"
-        export VAULT_TOKEN="${secret_id}"
-        export VAULT_SKIP_VERIFY="true"
+        if is-vault-enabled ; then
+            local vaddr
+            vaddr="$(vault-address)" || exit
+            secret_id="$(get-value "vault-root-token")" || exit
+            export VAULT_ADDR="https://${vaddr}:8200"
+            export VAULT_TOKEN="${secret_id}"
+            export VAULT_SKIP_VERIFY="true"
 
-        detail "Enabling workload identity integration with vault"
-        sed "s/%ADDR%/${addr}/" \
-            "${root_dir}/extras/nomad/vault-workload-identities/vault-auth-method-jwt-nomad.json" > "/tmp/${DIR_SHA}-vault-auth.json" ||
-            failure "Could not configure vault auth method file"
+            detail "Enabling workload identity integration with vault"
+            sed "s/%ADDR%/${addr}/" \
+                "${root_dir}/extras/nomad/vault-workload-identities/vault-auth-method-jwt-nomad.json" > "/tmp/${DIR_SHA}-vault-auth.json" ||
+                failure "Could not configure vault auth method file"
 
-        vault auth enable -path "jwt-nomad" "jwt" > /dev/null ||
-            failure "Could not enable vault jwt"
-        vault write auth/jwt-nomad/config "@/tmp/${DIR_SHA}-vault-auth.json" > /dev/null ||
-            failure "Could not write vault auth method"
-        vault write auth/jwt-nomad/role/nomad-workloads \
-            "@/${root_dir}/extras/nomad/vault-workload-identities/vault-role-nomad-workloads.json" > /dev/null ||
-            failure "Could not write vault role for workloads"
-        local accessor
-        accessor="$(vault auth list -format=json | jq -r '.["jwt-nomad/"].accessor')"
-        if [ -z "${accessor}" ]; then
-            failure "Unable to extract accessor for jwt-nomad/ from vault"
+            vault auth enable -path "jwt-nomad" "jwt" > /dev/null ||
+                failure "Could not enable vault jwt"
+            vault write auth/jwt-nomad/config "@/tmp/${DIR_SHA}-vault-auth.json" > /dev/null ||
+                failure "Could not write vault auth method"
+            vault write auth/jwt-nomad/role/nomad-workloads \
+                "@/${root_dir}/extras/nomad/vault-workload-identities/vault-role-nomad-workloads.json" > /dev/null ||
+                failure "Could not write vault role for workloads"
+            local accessor
+            accessor="$(vault auth list -format=json | jq -r '.["jwt-nomad/"].accessor')"
+            if [ -z "${accessor}" ]; then
+                failure "Unable to extract accessor for jwt-nomad/ from vault"
+            fi
+
+            sed "s/%ACCESSOR%/${accessor}/" \
+                "${root_dir}/extras/nomad/vault-workload-identities/vault-policy-nomad-workloads.hcl" > "/tmp/${DIR_SHA}-policy.hcl" ||
+                failure "Could not configure vault policy document"
+            vault policy write "nomad-workloads" "/tmp/${DIR_SHA}-policy.hcl" > /dev/null ||
+                failure "Could not write vault policy for nomad"
+
+            rm -f "/tmp/${DIR_SHA}"*
+
+            detail "Enabling the vault nomad secret engine"
+            vault secrets enable nomad > /dev/null ||
+                failure "Could not enable vault nomad secret engine"
+            vault write nomad/config/lease ttl=500 max_ttl=1000 > /dev/null ||
+                failure "Could not configure vault nomad secret engine leases"
+            local nomad_addr="${addr}"
+            if is-consul-enabled; then
+                nomad_addr="nomad.service.consul"
+            fi
+            vault write nomad/config/access address="http://${nomad_addr}:4646" token="${secret_id}" > /dev/null ||
+                failure "Could not write nomad connection info to vault secret engine"
         fi
 
-        sed "s/%ACCESSOR%/${accessor}/" \
-            "${root_dir}/extras/nomad/vault-workload-identities/vault-policy-nomad-workloads.hcl" > "/tmp/${DIR_SHA}-policy.hcl" ||
-            failure "Could not configure vault policy document"
-        vault policy write "nomad-workloads" "/tmp/${DIR_SHA}-policy.hcl" > /dev/null ||
-            failure "Could not write vault policy for nomad"
-
-        rm -f "/tmp/${DIR_SHA}"*
-
-        detail "Enabling the vault nomad secret engine"
-        vault secrets enable nomad > /dev/null ||
-            failure "Could not enable vault nomad secret engine"
-        vault write nomad/config/lease ttl=500 max_ttl=1000 > /dev/null ||
-            failure "Could not configure vault nomad secret engine leases"
-        local nomad_addr="${addr}"
         if is-consul-enabled; then
-            nomad_addr="nomad.service.consul"
+            detail "Enabling workload identity integration with consul"
+            # NOTE: This will setup the auth, acl binding rule, acl policy,
+            # and acl role (for the default namespace)
+            nomad setup consul -y -jwks-url "http://${addr}:4646/.well-known/jwks.json" > /dev/null ||
+                failure "Failed to setup nomad workload integration with consul"
         fi
-        vault write nomad/config/access address="http://${nomad_addr}:4646" token="${secret_id}" > /dev/null ||
-            failure "Could not write nomad connection info to vault secret engine"
-    fi
-
-    if is-consul-enabled; then
-        detail "Enabling workload identity integration with consul"
-        # NOTE: This will setup the auth, acl binding rule, acl policy,
-        # and acl role (for the default namespace)
-        nomad setup consul -y -jwks-url "http://${addr}:4646/.well-known/jwks.json" > /dev/null ||
-            failure "Failed to setup nomad workload integration with consul"
     fi
 
     success "Initialization of nomad complete"
+
+    run-hook "init-nomad" "post" "${instance}" || exit
 }
 
 # Initializes the vault server. Runs the operator init
@@ -555,6 +618,8 @@ function init-vault-server() {
     local name="${1?Name of server required}"
     local instance
     instance="$(name-to-instance "${name}")" || exit
+
+    run-hook "init-vault-server" "pre" "${instance}" || exit
 
     info "Initializing vault server..."
     local addr
@@ -638,6 +703,8 @@ function init-vault-server() {
     fi
 
     success "Vault server initialized and ready"
+
+    run-hook "init-vault-server" "post" "${instance}" || exit
 }
 
 # Initialize the vault server instance. Currently
@@ -649,6 +716,8 @@ function vault-preinit() {
     local name="${1?Name of server required}"
     local instance
     instance="$(name-to-instance "${name}")" || exit
+
+    run-hook "vault-preinit" "pre" "${instance}" || exit
 
     info "Initializing instance for vault..."
     incus exec --env "DEBIAN_FRONTEND=noninteractive" "${instance}" -- apt-get update > /dev/null ||
@@ -662,6 +731,8 @@ function vault-preinit() {
         -sha256 -x509 -subj "/O=HashiCorp/CN=Vault" -days 365 > /dev/null 2>&1 ||
         failure "Failed to generate vault TLS key/cert files on %s" "${instance}"
     success "Vault instance initialization complete"
+
+    run-hook "vault-preinit" "post" "${instance}" || exit
 }
 
 # Generate and store consul encryption key. This
@@ -670,11 +741,15 @@ function consul-preinit() {
     local instance key
     instance="$(get-instance-of "consul")" || exit
 
+    run-hook "consul-preinit" "pre" "${instance}" || exit
+
     key="$(incus exec "${instance}" -- /nomad/bin/consul keygen)" ||
         failure "Unable to generate nomad gossip key"
     store-value "consul-gossip-key" "${key}" || exit
 
     success "Consul initialized for use"
+
+    run-hook "consul-preinit" "post" "${instance}" || exit
 }
 
 # Update the consul agent token on an instance
@@ -761,7 +836,7 @@ function consul-enable() {
     if [[ "${instance}" == *"client"* ]] || [[ "${instance}" == *"server"* ]]; then
         # Install the cni plugins
         if [[ "${instance}" == *"client"* ]]; then
-           install-cni-plugins "${instance}" || exit
+            install-cni-plugins "${instance}" || exit
         fi
 
         local agent_token
@@ -805,8 +880,11 @@ function cacher-enable() {
     addr="$(cacher-address)" || exit
 
     detail "enabling apt cacher on %s" "${instance}"
-    incus exec "${instance}" -- sh -c "echo 'Acquire::http { Proxy \"http://${addr}:3142\"; }' > /etc/apt/apt.conf.d/99proxy" ||
-        failure "Could not enable apt cacher on %s" "${instance}"
+    local output
+    if ! output="$(incus exec "${instance}" -- sh -c "echo 'Acquire::http { Proxy \"http://${addr}:3142\"; }' > /etc/apt/apt.conf.d/99proxy" 2>&1)"; then
+        warn "Could not enable apt cacher on %s" "${instance}"
+        warn "Reason: %s" "${output}"
+    fi
 }
 
 # Pause an instance
@@ -824,9 +902,13 @@ function pause-instance() {
         failure "Cannot pause %s in current state (%s)" "${instance}" "${status}"
     fi
 
+    run-hook "pause-instance" "pre" "${instance}" || exit
+
     info "Pausing instance %s" "${instance}"
     incus pause "${instance}" ||
         failure "Unable to pause %s" "${instance}"
+
+    run-hook "pause-instance" "post" "${instance}" || exit
 }
 
 # Resume an instance
@@ -844,10 +926,14 @@ function resume-instance() {
         failure "Cannot resume %s in current state (%s)" "${instance}" "${status}"
     fi
 
+    run-hook "resume-instance" "pre" "${instance}" || exit
+
     info "Resuming instance %s" "${instance}"
     incus resume "${instance}" ||
         failure "Unable to pause %s" "${instance}"
     success "Instance has been resumed %s" "${instance}"
+
+    run-hook "resume-instance" "post" "${instance}" || exit
 }
 
 # Delete an instance
@@ -865,11 +951,40 @@ function delete-instance() {
         instance="$(name-to-instance "${name}")" || exit
     fi
 
+    run-hook "delete-instance" "pre" "${instance}" || exit
+
     info "Destroying nomad cluster instance %s" "${instance}"
-    incus stop "${instance}" --force ||
-        failure "Unable to stop instance %s" "${instance}"
+    incus delete "${instance}" --force ||
+        failure "Unable to delete instance %s" "${instance}"
+
+    delete-instance-volumes "${instance}" || exit
 
     success "Nomad cluster instance destroyed %s" "${instance}"
+
+    run-hook "delete-instance" "post" "${instance}" || exit
+}
+
+# Delete any custom volumes that were built and attached
+# to the instance (based on naming)
+#
+# $1 - Name of instance (full name required)
+function delete-instance-volumes() {
+    local name="${1?Name is required}"
+    local volumes vol deletes list
+
+    volumes="$(incus storage volume list "${CLUSTER_VOLUME_POOL}" --format json)" ||
+        failure "Failed to list storage volumes within %s pool" "${CLUSTER_VOLUME_POOL}"
+
+    query="$(printf '.[] | select(.name | startswith("%s")) | select(.content_type == "block") | .name' "${name}")"
+    deletes="$(jq -r "${query}" <<< "${volumes}")"
+    if [ -n "${deletes}" ]; then
+        readarray -t list <<< "${deletes}"
+        for vol in "${list[@]}"; do
+            detail "deleting block volume - %s" "${vol}"
+            incus storage volume delete "${CLUSTER_VOLUME_POOL}" "${vol}" > /dev/null 2>&1 ||
+                failure "Failed to delete volume %s from pool %s" "${vol}" "${CLUSTER_VOLUME_POOL}"
+        done
+    fi
 }
 
 # Connect to an instance
@@ -880,8 +995,12 @@ function connect-instance() {
     local instance
     instance="$(name-to-instance "${name}")" || exit
 
+    run-hook "connect-instance" "pre" "${instance}" || exit
+
     info "Connecting to %s..." "${instance}"
     incus exec "${instance}" bash
+
+    run-hook "connect-instance" "post" "${instance}" || exit
 }
 
 # Stream nomad logs from instance
@@ -910,7 +1029,7 @@ function stream-logs() {
         esac
     fi
 
-    incus exec "${instance}" -- /helpers/stream-log "${service_name}"
+    incus exec "${instance}" -- /helpers/stream-log "${service_name}" &
 }
 
 # Restart nomad process. If client, will check
@@ -936,6 +1055,8 @@ function restart-nomad() {
             # restart will still be executed
             nids+=("$(name-to-node "${instance}")") || continue
         fi
+
+        run-hook "restart-nomad" "pre" "${instance}" || exit
     done
 
     # Install bins in case they have changed
@@ -981,11 +1102,15 @@ function restart-nomad() {
     for (( i=0; i < "${#names[@]}"; i++ )); do
         instance="${names[$i]}"
         if [[ "${instance}" != *"client"* ]]; then
+            run-hook "restart-nomad" "post" "${instance}" || exit
+
             continue
         fi
 
         nid="${nids[$i]}"
         if [ -z "${nid}" ]; then
+            run-hook "restart-nomad" "post" "${instance}" || exit
+
             continue
         fi
 
@@ -999,6 +1124,8 @@ function restart-nomad() {
             nomad node eligibility -enable "${nid}" > /dev/null ||
                 failure "Unable to mark node %s as eligible" "${nid}"
         fi
+
+        run-hook "restart-nomad" "post" "${instance}" || exit
     done
 }
 
@@ -1009,6 +1136,8 @@ function reconfigure-nomad() {
     local name="${1?Name is required}"
     local instance service_name
     instance="$(name-to-instance "${name}")" || exit
+
+    run-hook "reconfigure-nomad" "pre" "${instance}" || exit
 
     info "Reconfiguring nomad on %s" "${instance}"
 
@@ -1030,6 +1159,8 @@ function reconfigure-nomad() {
         failure "Unexpected error during nomad reload"
 
     success "Reconfigured nomad on %s" "${instance}"
+
+    run-hook "reconfigure-nomad" "post" "${instance}" || exit
 }
 
 # Run a command on an instance
@@ -1059,6 +1190,8 @@ function install-cni-plugins() {
     arch="$([ "$(uname -m)" == "x86_64" ] && printf "amd64" || printf "arm64")"
     local cache_path="/tmp/cluster-cni-plugins-cache.tgz"
     local consul_cache_path="/tmp/cluster-consul-cni-cache.zip"
+
+    install-package "${instance}" "tar" "zip" || exit
 
     # NOTE: Use file locking to provide a simple mutex
     # so only files are only downloaded once
@@ -1103,8 +1236,6 @@ function install-cni-plugins() {
         failure "Could not unpack CNI plugins to bin directory"
     incus file push "${consul_cache_path}" "${instance}/tmp/consul-plugin.zip" > /dev/null ||
         failure "Could not upload nomad consul CNI plugin to instance - %s" "${instance}"
-    incus exec --env "DEBIAN_FRONTEND=noninteractive" "${instance}" -- apt-get install -yq unzip > /dev/null ||
-        failure "Could not install required unzip package on instance - %s" "${instance}"
     incus exec "${instance}" -- unzip /tmp/consul-plugin.zip -d /opt/cni/bin > /dev/null ||
         failure "Could not unpack nomad consul CNI plugin on instance -%s" "${instance}"
 
@@ -1113,6 +1244,23 @@ function install-cni-plugins() {
         warn "Bridge kernel module not found, loading on - %s" "${instance}"
         incus exec "${instance}" -- modprobe bridge ||
             failure "Could not load bridge kernel module on - %s" "${instance}"
+    fi
+}
+
+function install-package() {
+    local name="${1?Instance name is required}"
+    local i=$(( ${#} - 1 ))
+    local pkgs=("${@:2:$i}")
+    local instance
+    instance="$(name-to-instance "${name}")" || exit
+
+    # NOTE: Wrap this and send to bash since 'command' gets picked up as a keyword
+    if incus exec "${instance}" -- bash -c "command -v apt-get > /dev/null 2>&1"; then
+        incus exec --env "DEBIAN_FRONTEND=noninteractive" "${instance}" -- apt-get install -yq "${pkgs[@]}" > /dev/null 2>&1 ||
+            failure "Failed to install packages via apt: %s" "${pkgs[*]}"
+    else
+        incus exec "${instance}" -- dnf install -yq "${pkgs[@]}" > /dev/null 2>&1 ||
+            failure "Failed to install packages via dnf: %s" "${pkgs[*]}"
     fi
 }
 
@@ -1180,7 +1328,7 @@ function is-cluster-network-enabled() {
 #
 # $1 - Force check if set
 function is-cacher-enabled() {
-    if [ -n "${__MEMO_CACHER_ENABLED}" ] && [ -z "${1}" ]; then
+    if [ -n "${__MEMO_CACHER_ENABLED}" ] && [ -n "${1}" ]; then
         return "${__MEMO_CACHER_ENABLED}"
     fi
 
@@ -1197,7 +1345,7 @@ function is-cacher-enabled() {
 #
 # $1 - Force check if set
 function is-vault-enabled() {
-    if [ -n "${__MEMO_VAULT_ENABLED}" ] && [ -z "${1}" ]; then
+    if [ -n "${__MEMO_VAULT_ENABLED}" ] && [ -n "${1}" ]; then
         return "${__MEMO_VAULT_ENABLED}"
     fi
 
@@ -1214,7 +1362,7 @@ function is-vault-enabled() {
 #
 # $1 - Force check if set
 function is-consul-enabled() {
-    if [ -n "${__MEMO_CONSUL_ENABLED}" ] && [ -z "${1}" ]; then
+    if [ -n "${__MEMO_CONSUL_ENABLED}" ] && [ -n "${1}" ]; then
         return "${__MEMO_CONSUL_ENABLED}"
     fi
 
@@ -1225,6 +1373,44 @@ function is-consul-enabled() {
 
     __MEMO_CONSUL_ENABLED="0"
     return 0
+}
+
+# Check if nomad acls are enabled in the cluster
+#
+# $1 - Force check if set
+function is-nomad-acl-enabled() {
+    if [ -n "${__MEMO_ACL_ENABLED}" ] && [ -n "${1}" ]; then
+        return "${__MEMO_ACL_ENABLED}"
+    fi
+
+    local val
+    val="$(get-value "nomad-acls")"
+    if [ "${val}" == "enabled" ]; then
+        __MEMO_ACL_ENABLED="0"
+        return 0
+    fi
+
+    __MEMO_ACL_ENABLED="1"
+    return 1
+}
+
+# Check is cni plugin installation is enabled in cluster
+#
+# $1 - Force check if set
+function is-nomad-cni-enabled() {
+    if [ -n "${__MEMO_CNI_ENABLED}" ] && [ -n "${1}" ]; then
+        return "${__MEMO_CNI_ENABLED}"
+    fi
+
+    local val
+    val="$(get-value "nomad-cni")"
+    if [ "${val}" == "enabled" ]; then
+        __MEMO_CNI_ENABLED="0"
+        return 0
+    fi
+
+    __MEMO_CNI_ENABLED="1"
+    return 1
 }
 
 # Get status of an instance
@@ -1262,77 +1448,6 @@ function get-instance-display-status() {
         "frozen") printf "%bpaused%b" "${TEXT_YELLOW}" "${TEXT_CLEAR}" ;;
         *) printf "unknown" ;;
     esac
-}
-
-# Execute any launcher scripts for instance
-#
-# $1 - Name of instance
-# $2 - Type of launcher (subdirectory in ./cluster/launchers)
-function run-launchers() {
-    local name="${1?Name of instance required}"
-    local type="${2?Type of launcher required}"
-    local instance
-    instance="$(name-to-instance "${name}")" || exit
-    instance_type="container"
-    if ! is-instance-container "${instance}"; then
-        instance_type="vm"
-    fi
-
-    local launcher_dir="./cluster/launchers/${type}"
-    if [ ! -d "${launcher_dir}" ]; then
-        return 0
-    fi
-
-    local files=("${launcher_dir}/"*)
-    local file
-    for file in "${files[@]}"; do
-        if [ ! -f "${file}" ] || [ ! -e "${file}" ]; then
-            debug "Skipping launcher path '%s' - not file or not executable" "${file}"
-            continue
-        fi
-
-        detail "running launcher '%s' on %s" "${file}" "${instance}"
-        "${file}" "${instance}" "${instance_type}" ||
-            failure "Failed to execute launcher script '%s' on %s" "${file}" "${instance}"
-    done
-}
-
-# Execute seed scripts on instance
-#
-# $1 - Name of instance
-# $2 - Type of seeds (subdirectory in ./cluster/seeds)
-function seed-instance() {
-    local name="${1?Name of instance required}"
-    local type="${2?Type of seed required}"
-    local instance
-    instance="$(name-to-instance "${name}")" || exit
-    local instance_type="container"
-    if ! is-instance-container "${instance}"; then
-        instance_type="vm"
-    fi
-
-    local seed_dir="./cluster/seeds/${type}"
-
-    if [ ! -d "${seed_dir}" ]; then
-        return 0
-    fi
-    local files=("${seed_dir}/"*)
-    local file
-    for file in "${files[@]}"; do
-        if [ ! -f "${file}" ]; then
-            continue
-        fi
-        detail "executing seed file on %s - %s" "${instance}" "${file}"
-
-        local remote="/tmp/$(random-string)"
-        incus file push "${file}" "${instance}${remote}" > /dev/null ||
-            failure "Could not upload seed file %s on %s" "${file}" "${instance}"
-        incus exec "${instance}" -- chmod a+x "${remote}" ||
-            failure "Could not make seed file '%s' executable on %s" "${file}" "${instance}"
-        incus exec "${instance}" -- "${remote}" "${instance_type}" ||
-            failure "Failed to execute seed file '%s' on %s" "${file}" "${instance}"
-        incus exec "${instance}" -- rm -f "${remote}"
-    done
 }
 
 # Apply user defined configurations for service
@@ -1411,6 +1526,8 @@ function install-bins() {
         link="link"
     fi
 
+    run-hook "install-bins" "pre" "${instance}" || exit
+
     detail "installing binaries on %s" "${instance}"
 
     # scrub the directory before populating
@@ -1418,6 +1535,8 @@ function install-bins() {
         failure "Cannot remove /cluster-bins directory"
     # install all the binaries
     install-dir "${instance}" "/nomad/bin" "/cluster-bins" "${link}"
+
+    run-hook "install-bins" "post" "${instance}" || exit
 }
 
 # Helper function to install files from source
@@ -1508,7 +1627,7 @@ function get-instances() {
     local type info instances
     type="${1}"
     info="$(incus list --format json)" || exit
-    instances="$(jq -r '.[] | select(.name | contains("'"${NOMAD_INSTANCE_PREFIX}${type}"'")) | .name' <<< "${info}")"
+    instances="$(jq -r '.[] | select(.name | contains("'"${CLUSTER_INSTANCE_PREFIX}${type}"'")) | .name' <<< "${info}")"
     printf "%s" "${instances}"
 }
 
@@ -1697,7 +1816,7 @@ function get-node-address() {
 # $2 - Skip validation (optional)
 function name-to-instance() {
     local name="${1?Name is required}"
-    if [ -n "${2}" ] && [[ "${name}" == "${NOMAD_INSTANCE_PREFIX}"* ]]; then
+    if [ -n "${2}" ] && [[ "${name}" == "${CLUSTER_INSTANCE_PREFIX}"* ]]; then
         printf "%s" "${name}"
         return
     fi
@@ -1705,7 +1824,7 @@ function name-to-instance() {
     local instance_names instance
     readarray -t instance_names < <(get-instances)
     for instance in "${instance_names[@]}"; do
-        if [ "${instance}" == "${name}" ] || [ "${instance}" == "${NOMAD_INSTANCE_PREFIX}${name}" ]; then
+        if [ "${instance}" == "${name}" ] || [ "${instance}" == "${CLUSTER_INSTANCE_PREFIX}${name}" ]; then
             printf "%s" "${instance}"
             return
         fi
@@ -1753,7 +1872,7 @@ function name-to-node() {
     local instance_names instance i
     readarray -t instance_names < <(get-instances)
     for i in "${instance_names[@]}"; do
-        if [ "${i}" == "${name}" ] || [ "${i}" == "${NOMAD_INSTANCE_PREFIX}${name}" ]; then
+        if [ "${i}" == "${name}" ] || [ "${i}" == "${CLUSTER_INSTANCE_PREFIX}${name}" ]; then
             instance="${i}"
         fi
     done
@@ -1770,6 +1889,69 @@ function name-to-node() {
     fi
 
     failure "Could not locate a node for name - %s" "${name}"
+}
+
+# Execute named hook scripts
+#
+# $1 - Name of hook
+# $2 - Type of hook (pre or post)
+# $3 - Name of instance
+#
+# NOTE: full instance name required
+function run-hook() {
+    local hook="${1?Name of hook required}"
+    local type="${2?Type of hook required}"
+    local instance="${3?Name of instance required}"
+    local instance_type="container"
+    if ! is-instance-container "${instance}"; then
+        instance_type="vm"
+    fi
+
+    local hook_dir="./cluster/hooks/${hook}/${type}"
+
+    debug "running %s %s hook - %s on %s" "${type}" "${hook}" "${hook_dir}" "${instance}"
+
+    export CLUSTER_COMMONS="${csource}"
+
+    # Two types of scripts available:
+    #   * local - run on host
+    #   * remote - run on instance
+    local files=("${hook_dir}/local/"*)
+    local file display_name
+    if [ -f "${files[0]}" ]; then
+        info "Running local %s-%s hooks on %s" "${type}" "${hook}" "${instance}"
+        for file in "${files[@]}"; do
+            display_name="$(basename "${file}")"
+            if [ ! -f "${file}" ] || [ ! -e "${file}" ]; then
+                warn "skipping non-executable hook - %s on %s" "${display_name}" "${instance}"
+                continue
+            fi
+            detail "executing - %s on %s" "${display_name}" "${instance}"
+            "${file}" "${instance}" "${instance_type}" ||
+                failure "Execution of local %s-%s hook failed on %s - %s" "${type}" "${hook}" "${file}" "${instance}"
+        done
+    fi
+
+    files=("${hook_dir}/remote/"*)
+    if [ -f "${files[0]}" ]; then
+        info "Running remote %s-%s hooks" "${type}" "${hook}"
+        for file in "${files[@]}"; do
+            display_name="$(basename "${file}")"
+            if [ ! -f "${file}" ]; then
+                warn "skipping non-file hook - %s" "${display_name}"
+                continue
+            fi
+            detail "executing - %s" "${display_name}"
+            local remote="/tmp/$(random-string)"
+            incus file push "${file}" "${instance}${remote}" > /dev/null ||
+                failure "Could not upload hook file %s on %s" "${display_name}" "${instance}"
+            incus exec "${instance}" -- chmod a+x "${remote}" ||
+                failure "Could not make hook file '%s' executable on %s" "${display_name}" "${instance}"
+            incus exec "${instance}" -- "${remote}" "${instance}" "${instance_type}" ||
+                failure "Execution of remote %s-%s hook failed - %s" "${type}" "${hook}" "${display_name}"
+            incus exec "${instance}" -- rm -f "${remote}"
+        done
+    fi
 }
 
 # Apply network impairment to instance
@@ -1933,6 +2115,29 @@ function is-network-impairment-valid() {
     return 1
 }
 
+# Wait for the instance to respond to commands
+#
+# $1 - Name of instance
+# $2 - Number of iterations (seconds) to wait - default: 60
+function wait-for-instance() {
+    local name="${1?Name of instance is required}"
+    local count="${2}"
+    if [ -z "${count}" ]; then
+        count=60
+    fi
+    local instance i
+    instance="$(name-to-instance "${name}" "noverify")" || exit
+
+    for ((i=0;i<count;i++)); do
+      if incus exec "${instance}" -- ls > /dev/null 2>&1; then
+          return
+      fi
+      sleep 1
+    done
+
+    failure "Failed to establish connection to instance %s" "${instance}"
+}
+
 # Persist a value to local storage
 #
 # $1 - Reference key for stored value
@@ -1972,9 +2177,10 @@ function random-string() {
     if [ -z "${length}" ]; then
         length=10
     fi
+    local i
     local value=""
-    for _ in {0.."${length}"}; do
-        value+="$(printf "%x" $(($RANDOM%16)))"
+    for ((i=0;i<length;i++)); do
+        value+="$(printf "%x" $((RANDOM%16)))"
     done
 
     printf "%s" "${value}"
@@ -2077,6 +2283,12 @@ function cluster-must-have-consul() {
 function cluster-must-have-vault() {
     if [ -z "$(get-instances "vault")" ]; then
         failure "Cluster must have vault enabled"
+    fi
+}
+
+function cluster-must-have-ceph() {
+    if [ -z "$(get-instances "ceph")" ]; then
+        failure "Cluster must have ceph enabled"
     fi
 }
 

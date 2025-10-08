@@ -7,10 +7,11 @@ servers="0"
 clients="0"
 memory="1GiB"
 cpus="1"
-image="ubuntu/noble"
+image="ubuntu/noble/cloud"
 consul="0"
 vm=""
 impairment=""
+disk=""
 
 for arg in "${@}"; do
     shift
@@ -23,12 +24,13 @@ for arg in "${@}"; do
         "--consul") set -- "${@}" "-o" ;;
         "--vm") set -- "${@}" "-v" ;;
         "--impairment") set -- "${@}" "-I" ;;
+        "--disk") set -- "${@}" "-d" ;;
         "--help") set -- "${@}" "-h" ;;
         *) set -- "${@}" "${arg}" ;;
     esac
 done
 
-while getopts "hc:s:m:C:i:o:vAI:" opt; do
+while getopts "hc:s:m:C:i:o:vAI:d:D" opt; do
     case "${opt}" in
         "c") clients="${OPTARG}" ;;
         "s") servers="${OPTARG}" ;;
@@ -38,6 +40,7 @@ while getopts "hc:s:m:C:i:o:vAI:" opt; do
         "o") consul="${OPTARG}" ;;
         "v") vm="1" ;;
         "I") impairment="${OPTARG}" ;;
+        "d") disk="${OPTARG}" ;;
         "h") help="1" ;;
         *) help="1" ;;
     esac
@@ -63,6 +66,10 @@ if [ -n "${cpus}" ] && [ "${cpus}" -gt 0 ]; then
     LAUNCH_ARGS+=("--config" "limits.cpu=${cpus}")
 fi
 
+if [ -n "${disk}" ]; then
+    LAUNCH_ARGS+=("--device" "root,size=${disk}")
+fi
+
 LAUNCH_ARGS+=("--ephemeral" "--profile" "${PROFILE_NAME}" "images:${image}")
 
 # Check if there's anything to add
@@ -78,6 +85,7 @@ if [ -n "${help}" ]; then
     printf "\t--cpus NUM, -C NUM\t\tNumber of CPUs to assign instance (default: 1)\n"
     printf "\t--memory MEM, -m MEM\t\tMaximum memory allocated (default: 1GiB)\n"
     printf "\t--image NAME, -i NAME\t\tImage for instances\n"
+    printf "\t--disk SIZE, -d SIZE\tSize of the root disk\n"
     printf "\t--impairment NAME, -I NAME\tNetwork impairment (%s)\n" "${CLUSTER_NETWORK_IMPAIRMENTS[*]}"
     printf "\t--vm, -v\t\t\tUse virtual machine instances\n"
     exit 1

@@ -12,15 +12,17 @@ for arg in "$@"; do
     case "${arg}" in
         "--servers") set -- "${@}" "-s" ;;
         "--clients") set -- "${@}" "-c" ;;
+        "--restart") set -- "${@}" "-R" ;;
         "--help") set -- "${@}" "-h" ;;
         *) set -- "${@}" "${arg}" ;;
     esac
 done
 
-while getopts "hcs" opt; do
+while getopts "hcsR" opt; do
     case "${opt}" in
         "c") clients="1" ;;
         "s") servers="1" ;;
+        "R") restart="1" ;;
         "h") help="1" ;;
         *) help="1" ;;
     esac
@@ -33,20 +35,23 @@ fi
 
 if [ -n "${help}" ]; then
     printf "Usage: %s [options] [INSTANCE [INSTANCE...]]\n" "${SCRIPT_NAME}"
-    printf "\t--servers, -s\tRestart nomad server processes\n"
-    printf "\t--clients, -c\tRestart nomad client processes\n"
+    printf "\t--servers, -s\tReconfigure nomad server processes\n"
+    printf "\t--clients, -c\tReconfigure nomad client processes\n"
+    printf "\t--restart, -R\tRestart nomad processes after reconfigure\n"
     exit 1
 fi
 
 cluster-must-exist
 
 pids=()
+instances=()
 
 info "Reconfiguring cluster instances..."
 
 if [ -n "${servers}" ]; then
     readarray -t list < <(get-instances server)
     for n in "${list[@]}"; do
+        instances+=("${n}")
         reconfigure-nomad "${n}" &
         pids+=("${!}")
     done
@@ -55,12 +60,14 @@ fi
 if [ -n "${clients}" ]; then
     readarray -t list < <(get-instances client)
     for n in "${list[@]}"; do
+        instances+=("${n}")
         reconfigure-nomad "${n}" &
         pids+=("${!}")
     done
 fi
 
 for n in "${@}"; do
+    instances+=("${n}")
     reconfigure-nomad "${n}" &
     pids+=("${!}")
 done
@@ -74,4 +81,8 @@ done
 
 if [ "${result}" != "0" ]; then
     failure "Unexpected error encountered during service reconfigure(s)"
+fi
+
+if [ -n "${restart}" ]; then
+    restart-nomad "${instances[@]}" || exit
 fi

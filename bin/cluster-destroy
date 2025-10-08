@@ -11,22 +11,26 @@ for arg in "${@}"; do
     shift
     case "${arg}" in
         "--cacher") set -- "${@}" "-C" ;;
+        "--ceph") set -- "${@}" "-E" ;;
         "--help") set -- "${@}" "-h" ;;
         *) set -- "${@}" "${arg}" ;;
     esac
 done
 
-while getopts "hC" opt; do
+while getopts "hEC" opt; do
     case "${opt}" in
+        "E") ceph="1" ;;
         "C") cacher="1" ;;
         "h") help="1" ;;
         *) help="1" ;;
     esac
 done
+shift $((OPTIND-1))
 
 if [ -n "${help}" ]; then
     printf "Usage: %s [options ][INSTANCE_NAME [INSTANCE_NAME...]]\n" "${SCRIPT_NAME}"
     printf "\t--cacher, -C\tDestroy global apt cacher\n"
+    printf "\t--ceph, -E\tDestroy Ceph cluster\n"
     exit 1
 fi
 
@@ -37,14 +41,17 @@ fi
 
 cluster-must-exist
 
-if [ "${#}" -lt "1" ]; then
+if [ -n "${ceph}" ]; then
+    debug "deleting ceph cluster"
+    instance_list="$(get-instances)"
+    readarray -t instances <<< "${instance_list}"
+elif [ "${#}" -lt "1" ]; then
     debug "deleting full cluster"
     full_delete="1"
     instance_list="$(get-instances)"
-    readarray -t instances < <(printf "%s" "${instance_list}")
-else
-    instances=("${@}")
+    readarray -t instances <<< "${instance_list}"
 fi
+instances+=("${@}")
 
 pids=()
 for instance in "${instances[@]}"; do

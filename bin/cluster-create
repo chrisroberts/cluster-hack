@@ -7,12 +7,15 @@ servers="0"
 clients="0"
 memory="1GiB"
 cpus="1"
-image="ubuntu/noble"
+image="ubuntu/noble/cloud"
 consul="0"
 vault="0"
 vm=""
 cacher=""
 network=""
+disk=""
+acl=""
+cni=""
 
 for arg in "${@}"; do
     shift
@@ -27,12 +30,15 @@ for arg in "${@}"; do
         "--vm") set -- "${@}" "-v" ;;
         "--cacher") set -- "${@}" "-A" ;;
         "--network") set -- "${@}" "-n" ;;
+        "--disk") set -- "${@}" "-d" ;;
+        "--enable-acl") set -- "${@}" "-E" ;;
+        "--install-cni") set -- "${@}" "-I" ;;
         "--help") set -- "${@}" "-h" ;;
         *) set -- "${@}" "${arg}" ;;
     esac
 done
 
-while getopts "hc:s:m:C:i:o:vAVn" opt; do
+while getopts "hc:s:m:C:i:o:vAVnd:EI" opt; do
     case "${opt}" in
         "c") clients="${OPTARG}" ;;
         "s") servers="${OPTARG}" ;;
@@ -50,7 +56,10 @@ while getopts "hc:s:m:C:i:o:vAVn" opt; do
         "v") vm="1" ;;
         "A") cacher="1" ;;
         "n") network="1" ;;
+        "d") disk="${OPTARG}" ;;
         "h") help="1" ;;
+        "E") acl="1" ;;
+        "I") cni="1" ;;
         *) help="1" ;;
     esac
 done
@@ -61,11 +70,6 @@ while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
 root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
 
 . "${root}/common.bash" || exit
-
-LAUNCH_ARGS=()
-if [ -n "${vm}" ]; then
-    LAUNCH_ARGS+=("--vm")
-fi
 
 if [ -n "${vm}" ]; then
     LAUNCH_ARGS+=("--vm")
@@ -79,6 +83,10 @@ if [ -n "${cpus}" ] && [ "${cpus}" -gt 0 ]; then
     LAUNCH_ARGS+=("--config" "limits.cpu=${cpus}")
 fi
 
+if [ -n "${disk}" ]; then
+    LAUNCH_ARGS+=("--device" "root,size=${disk}")
+fi
+
 LAUNCH_ARGS+=("--ephemeral" "--profile" "${PROFILE_NAME}" "images:${image}")
 
 if [ -n "${help}" ]; then
@@ -88,11 +96,14 @@ if [ -n "${help}" ]; then
     printf "\t--cpus NUM, -C NUM\tNumber of CPUs to assign instance (default: 1)\n"
     printf "\t--memory MEM, -m MEM\tMaximum memory allocated (default: 1GiB)\n"
     printf "\t--image NAME, -i NAME\tImage for instances\n"
+    printf "\t--disk SIZE, -d SIZE\tSize of the root disk\n"
     printf "\t--consul NUM, -o NUM\tEnable consul with number of servers (3 minimum)\n"
     printf "\t--vault, -V\t\tEnable vault (currently single server only)\n"
     printf "\t--vm, -v\t\tUse virtual machine instances\n"
     printf "\t--cacher, -A\t\tEnable global apt cacher\n"
     printf "\t--network, -n\t\tCreate isolated network (required for traffic control)\n"
+    printf "\t--enable-acl, -E\tEnable nomad ACLs\n"
+    printf "\t--install-cni, -I\tInstall CNI plugins on nomad clients\n"
     exit 1
 fi
 
@@ -176,6 +187,18 @@ if [ -n "${vault_enabled}" ]; then
 fi
 
 info "Creating new nomad cluster - %d servers with %d clients" "${servers}" "${clients}"
+if [ -n "${acl}" ]; then
+    store-value "nomad-acls" "enabled" || exit
+    detail "nomad acl enabled"
+else
+    store-value "nomad-acls" "disabled" || exit
+fi
+if [ -n "${cni}" ]; then
+    store-value "nomad-cni" "enabled" || exit
+    detail "nomad cni plugins enabled"
+else
+    store-value "nomad-cni" "disabled" || exit
+fi
 
 info "Setting up nomad server instances..."
 start_idx="0"
@@ -257,7 +280,7 @@ else
     fi
 fi
 
-nomad_token="$(get-value "nomad-root-token")" || exit
+nomad_token="$(get-value "nomad-root-token")" # || exit
 envcontent=()
 envcontent+=("$(printf 'export NOMAD_ADDR="http://%s:4646"\n' "${addr}")")
 envcontent+=("$(printf 'export NOMAD_TOKEN="%s"\n' "${nomad_token}")")

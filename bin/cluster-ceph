@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Summary: ceph cluster commands
+
+csource="${BASH_SOURCE[0]}"
+while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
+root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
+
+# First argument will be the subcommand name if provided
+subcommand="${1}"
+
+if [ "${#}" -lt 1 ] || [ ! -f "${root}/cluster-ceph-${subcommand}" ]; then
+    bindir=("${root}/"*)
+    cmds=()
+    for script in "${bindir[@]}"; do
+        script="$(basename "${script}")"
+        if [[ "${script}" != "cluster-ceph-"* ]]; then
+           continue
+        fi
+
+        content="$(<"${root}/${script}")"
+        if [[ "${content}" == *"Summary:"* ]]; then
+            content="${content#*Summary: }"
+            content="${content%%$'\n'*}"
+        else
+            content=""
+        fi
+
+        cmd="${script#cluster-ceph-}"
+        if [ "${#cmd}" -lt "9" ]; then
+            spc="\t\t"
+        else
+            spc="\t"
+        fi
+        cmds+=("$(printf "\t%s%b - %s\n" "${cmd}" "${spc}" "${content}" )")
+    done
+
+    printf "Usage: cluster ceph [subcommand]\n"
+    printf "%s\n" "${cmds[@]}"
+
+    exit 1
+fi
+
+# Pop the name off before passing arguments
+shift
+
+# Call the actual script
+"${root}/cluster-ceph-${subcommand}" "${@}"
