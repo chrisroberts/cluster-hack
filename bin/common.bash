@@ -1071,30 +1071,62 @@ function restart-nomad() {
         wait "${pid}" || exit
     done
 
-    # Trigger restarts
-    local service_name
-    local pids=()
-    for (( i=0; i < "${#names[@]}"; i++ )); do
-        instance="${names[$i]}"
-        info "Restarting nomad on %s" "${instance}"
-        if [[ "${instance}" == *"client"* ]]; then
-            service_name="nomad-client"
-        else
-            service_name="nomad"
+    # Restart initial server instance if any
+    local server_instance server_pid
+    for instance in "${names[@]}"; do
+        if [[ "${instance}" == *"server"* ]]; then
+            server_instance="${instance}"
+            info "Restarting nomad on %s" "${instance}"
+            incus exec "${instance}" -- systemctl restart nomad &
+            server_pid="${!}"
+            break
         fi
-        incus exec "${instance}" -- systemctl restart "${service_name}" &
-        pids+=("${!}")
     done
 
-    # Wait for restarts to complete
     local pid
-    for (( i=0; i < "${#names[@]}"; i++ )); do
-        instance="${names[$i]}"
-        pid="${pids[$i]}"
-        wait "${pid}" ||
-            failure "Unexpected error encountered during nomad restart on %s" "${instance}"
-        success "Nomad restarted %s" "${instance}"
+    pids=()
+    # Trigger all the client restarts
+    for instance in "${names[@]}"; do
+        if [[ "${instance}" == *"client"* ]]; then
+            info "Restarting nomad on %s" "${instance}"
+            incus exec "${instance}" -- systemctl restart nomad-client &
+            pids+=("${!}")
+        fi
     done
+
+    # If there is a server pid, wait for it
+    if [ -n "${server_pid}" ]; then
+        if ! wait "${server_pid}"; then
+            # Wait for any in progress restarts before failing
+            for pid in "${pids[@]}"; do
+                wait "${pid}"
+            done
+            failure "Unexpected error encountered during nomad restart"
+        fi
+    fi
+
+    # Trigger all the server restarts
+    for instance in "${names[@]}"; do
+        if [ "${instance}" != "${server_instance}" ] && [[ "${instance}" == *"server"* ]]; then
+            info "Restarting nomad on %s" "${instance}"
+            incus exec "${instance}" -- systemctl restart nomad &
+            pids+=("${!}")
+        fi
+    done
+
+    # And now wait for everything to finish
+    local failed
+    for pid in "${pids[@]}"; do
+        if ! wait "${pid}"; then
+            failed="1"
+        fi
+    done
+
+    if [ -n "${failed}" ]; then
+        failure "Unexpected error encountered during nomad restart"
+    fi
+
+    success "Nomad restarts are complete"
 
     # Check for any clients marked as ineligible
     # and update them to eligible
