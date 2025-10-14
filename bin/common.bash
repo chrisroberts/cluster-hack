@@ -1648,17 +1648,19 @@ function get-instance-address() {
     local instance
     instance="$(name-to-instance "${name}" "novalidate")" || exit
 
-    local result address network retried
+    local result address network attempts
+    attempts="0"
     network="$(cluster-network)" || exit
 
     # The address might not have made it to the leases list if the
     # instance was just created. If retrying, force a wait to allow
     # the information to be made available.
-    while [ -z "${retried}" ]; do
-        if [ -n "${result}" ]; then
-            retried="1"
+    while [ "${attempts}" -lt "10" ] && [ -z "${address}" ]; do
+        if [ "${attempts}" -gt "0" ]; then
+            debug "no address found for instance %s, waiting..." "${instance}"
             sleep 1
         fi
+        ((attempts++))
         result="$(incus network list-leases "${network}" --format json)" ||
             failure "Could not list network leases for address lookup on %s" "${instance}"
         address="$(jq -r '.[] | select(.hostname == "'"${instance}"'") | select(.address | contains(".")) | .address' <<< "${result}")"
@@ -1928,27 +1930,27 @@ function run-hook() {
             fi
             detail "executing - %s on %s" "${display_name}" "${instance}"
             "${file}" "${instance}" "${instance_type}" ||
-                failure "Execution of local %s-%s hook failed on %s - %s" "${type}" "${hook}" "${file}" "${instance}"
+                failure "Execution of local %s-%s hook failed on %s - %s" "${type}" "${hook}" "${instance}" "${file}"
         done
     fi
 
     files=("${hook_dir}/remote/"*)
     if [ -f "${files[0]}" ]; then
-        info "Running remote %s-%s hooks" "${type}" "${hook}"
+        info "Running remote %s-%s hooks on %s" "${type}" "${hook}" "${instance}"
         for file in "${files[@]}"; do
             display_name="$(basename "${file}")"
             if [ ! -f "${file}" ]; then
-                warn "skipping non-file hook - %s" "${display_name}"
+                warn "skipping non-file hook - %s on %s" "${display_name}" "${instance}"
                 continue
             fi
-            detail "executing - %s" "${display_name}"
+            detail "executing - %s on %s" "${display_name}" "${instance}"
             local remote="/tmp/$(random-string)"
             incus file push "${file}" "${instance}${remote}" > /dev/null ||
                 failure "Could not upload hook file %s on %s" "${display_name}" "${instance}"
             incus exec "${instance}" -- chmod a+x "${remote}" ||
                 failure "Could not make hook file '%s' executable on %s" "${display_name}" "${instance}"
             incus exec "${instance}" -- "${remote}" "${instance}" "${instance_type}" ||
-                failure "Execution of remote %s-%s hook failed - %s" "${type}" "${hook}" "${display_name}"
+                failure "Execution of remote %s-%s hook on %s failed on - %s" "${type}" "${hook}" "${instance}" "${display_name}"
             incus exec "${instance}" -- rm -f "${remote}"
         done
     fi
