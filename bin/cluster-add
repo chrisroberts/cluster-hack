@@ -12,6 +12,8 @@ consul="0"
 vm=""
 impairment=""
 disk=""
+disable_secureboot=""
+passthru=""
 
 for arg in "${@}"; do
     shift
@@ -25,12 +27,14 @@ for arg in "${@}"; do
         "--vm") set -- "${@}" "-v" ;;
         "--impairment") set -- "${@}" "-I" ;;
         "--disk") set -- "${@}" "-d" ;;
+        "--disable-secureboot") set -- "${@}" "-D" ;;
+        "--passthru") set -- "${@}" "-p" ;;
         "--help") set -- "${@}" "-h" ;;
         *) set -- "${@}" "${arg}" ;;
     esac
 done
 
-while getopts "hc:s:m:C:i:o:vAI:d:D" opt; do
+while getopts "hc:s:m:C:i:o:vAI:d:Dp" opt; do
     case "${opt}" in
         "c") clients="${OPTARG}" ;;
         "s") servers="${OPTARG}" ;;
@@ -41,6 +45,8 @@ while getopts "hc:s:m:C:i:o:vAI:d:D" opt; do
         "v") vm="1" ;;
         "I") impairment="${OPTARG}" ;;
         "d") disk="${OPTARG}" ;;
+        "D") disable_secureboot="1" ;;
+        "p") passthru="1" ;;
         "h") help="1" ;;
         *) help="1" ;;
     esac
@@ -54,12 +60,20 @@ root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
 . "${root}/common.bash" || exit
 
 LAUNCH_ARGS=()
+
+if [ -n "${passthru}" ]; then
+    LAUNCH_ARGS+=("${@}")
+
 if [ -n "${vm}" ]; then
     LAUNCH_ARGS+=("--vm")
 fi
 
 if [ -n "${memory}" ]; then
     LAUNCH_ARGS+=("--config" "limits.memory=${memory}")
+fi
+
+if [ -n "${disable_secureboot}" ]; then
+    LAUNCH_ARGS+=("--config" "security.secureboot=false")
 fi
 
 if [ -n "${cpus}" ] && [ "${cpus}" -gt 0 ]; then
@@ -78,16 +92,18 @@ if [ "${servers}" == "0" ] && [ "${clients}" == "0" ] && [ "${consul}" == "0" ];
 fi
 
 if [ -n "${help}" ]; then
-    printf "Usage: %s [options] --servers n --clients n\n" "${SCRIPT_NAME}"
+    printf "Usage: %s [options]\n" "${SCRIPT_NAME}"
     printf "\t--clients NUM, -c NUM\t\tNumber of client instances to add\n"
     printf "\t--servers NUM, -s NUM\t\tNumber of server instances to add\n"
     printf "\t--consul NUM, -o NUM\t\tNumber of consul servers to add\n"
     printf "\t--cpus NUM, -C NUM\t\tNumber of CPUs to assign instance (default: 1)\n"
     printf "\t--memory MEM, -m MEM\t\tMaximum memory allocated (default: 1GiB)\n"
     printf "\t--image NAME, -i NAME\t\tImage for instances\n"
-    printf "\t--disk SIZE, -d SIZE\tSize of the root disk\n"
+    printf "\t--disk SIZE, -d SIZE\t\tSize of the root disk\n"
     printf "\t--impairment NAME, -I NAME\tNetwork impairment (%s)\n" "${CLUSTER_NETWORK_IMPAIRMENTS[*]}"
+    printf "\t--disable-secureboot, -D\tDisable secureboot\n"
     printf "\t--vm, -v\t\t\tUse virtual machine instances\n"
+    printf "\t--passthru, -p\t\t\tPassthru extra arguments directly to incus\n"
     exit 1
 fi
 
