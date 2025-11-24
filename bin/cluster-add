@@ -63,6 +63,7 @@ LAUNCH_ARGS=()
 
 if [ -n "${passthru}" ]; then
     LAUNCH_ARGS+=("${@}")
+fi
 
 if [ -n "${vm}" ]; then
     LAUNCH_ARGS+=("--vm")
