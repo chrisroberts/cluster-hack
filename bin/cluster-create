@@ -3,8 +3,8 @@
 
 # Defaults
 help=""
-servers="0"
-clients="0"
+servers="3"
+clients="1"
 memory="1GiB"
 cpus="1"
 image="ubuntu/noble/cloud"
