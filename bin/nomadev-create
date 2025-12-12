@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# Summary: create new nomad dev instance
+
+# Defaults
+help=""
+memory="4GiB"
+cpus="4"
+image="ubuntu/noble/cloud"
+vm=""
+disk=""
+cacher=""
+projects_list=""
+
+for arg in "${@}"; do
+    shift
+    case "${arg}" in
+        "--memory") set -- "${@}" "-m" ;;
+        "--cpus") set -- "${@}" "-C" ;;
+        "--image") set -- "${@}" "-i" ;;
+        "--vm") set -- "${@}" "-v" ;;
+        "--help") set -- "${@}" "-h" ;;
+        "--projects") set -- "${@}" "-P" ;;
+        "--cacher") set -- "${@}" "-A" ;;
+        *) set -- "${@}" "${arg}" ;;
+    esac
+done
+
+while getopts "hm:C:i:vAd:P:" opt; do
+    case "${opt}" in
+        "A") cacher="1" ;;
+        "C") cpus="${OPTARG}" ;;
+        "m") memory="${OPTARG}" ;;
+        "i") image="${OPTARG}" ;;
+        "v") vm="1" ;;
+        "d") disk="${OPTARG}" ;;
+        "P") projects_list="${OPTARG}" ;;
+        "h") help="1" ;;
+        *) help="1" ;;
+    esac
+done
+shift $((OPTIND-1))
+
+csource="${BASH_SOURCE[0]}"
+while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
+root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
+
+. "${root}/common.bash" || exit
+
+unset CLUSTER_INSTANCE_PREFIX
+
+if [ -n "${help}" ]; then
+    printf "Usage: %s [options]\n" "${SCRIPT_NAME}"
+    printf "\t--cpus NUM, -C NUM\tNumber of CPUs to assign instance (default: 1)\n"
+    printf "\t--memory MEM, -m MEM\tMaximum memory allocated (default: 1GiB)\n"
+    printf "\t--image NAME, -i NAME\tImage for instances\n"
+    printf "\t--disk SIZE, -d SIZE\tSize of the root disk\n"
+    printf "\t--vm, -v\t\tUse virtual machine instances\n"
+    printf "\t--cacher, -A\t\tEnable global apt cacher\n"
+    printf "\t--projects PATH[,PATH], -P PATH[,PATH]\tExtra projects to include\n"
+    exit 1
+fi
+
+if [ -n "${vm}" ]; then
+    LAUNCH_ARGS+=("--vm")
+fi
+
+if [ -n "${memory}" ]; then
+    LAUNCH_ARGS+=("--config" "limits.memory=${memory}")
+fi
+
+if [ -n "${cpus}" ] && [ "${cpus}" -gt 0 ]; then
+    LAUNCH_ARGS+=("--config" "limits.cpu=${cpus}")
+fi
+
+if [ -n "${disk}" ]; then
+    LAUNCH_ARGS+=("--device" "root,size=${disk}")
+fi
+
+LAUNCH_ARGS+=("--ephemeral" "--profile" "${PROFILE_NAME}" "images:${image}")
+
+if [ -n "${cacher}" ]; then
+    launch-cluster-cacher-instance
+fi
+
+info "Creating new nomad dev instance"
+
+create-cluster-instance "nomad-dev" "raw" || exit
+
+projects=()
+init_paths=()
+if [ -n "${projects_list}" ]; then
+    info "Installing projects"
+    
+    while [ -n "${projects_list}" ]; do
+        if [[ "${project_list}" != *","* ]]; then
+            projects+=("${projects_list}")
+            projects_list=""
+            continue
+        fi
+        projects+=("${projects_list%%,*}")
+        projects_list="${projects_list#,*}"
+    done
+
+    for p in "${projects[@]}"; do
+        name="${p##*/}"
+        init_paths+=("/${name}")
+        incus config device add "nomad-dev" "${name}" "disk" "source=${p}" "path=/${name}" > /dev/null ||
+            failure "Could not add project %s" "${name}"
+    done
+fi
+
+for p in "${projects[@]}"; do
+    detail "%s -> %s" "${p}" "/${p##*/}"
+done
+
+if is-cacher-enabled; then
+    cacher-enable "nomad-dev"
+fi
+
+info "Installing packages"
+install-package "nomad-dev" "build-essential" "git" "curl" || exit
+
+go_version="$(incus exec nomad-dev -- grep -E "^go [[:digit:]].*$" /nomad/go.mod | sed 's/go //')"
+if [ -z "${go_version}" ]; then
+    error "Failed to discover go version for nomad"
+fi
+
+if [ "$(incus exec nomad-dev -- uname --machine)" == "x86_64" ]; then
+    arch="amd64"
+else
+    arch="arm64"
+fi
+
+info "Downloading go v%s for %s" "${go_version}" "${arch}"
+
+incus exec nomad-dev -- curl -sLf -o /tmp/go.tgz "https://go.dev/dl/go${go_version}.linux-${arch}.tar.gz" || exit
+
+# make git happy
+info "Making git happy"
+incus exec nomad-dev -- git config --global --add safe.directory /nomad || exit
+
+info "Installing go"
+incus exec nomad-dev -- tar -C /usr/local -xf /tmp/go.tgz || exit
+
+# add go to path
+incus exec nomad-dev -- bash -c "echo 'export PATH=\$PATH:/usr/local/go/bin:/nomad/bin' >> /etc/bash.bashrc" || exit
+incus exec nomad-dev -- bash -c "echo 'export PATH=\$PATH:/usr/local/go/bin:/nomad/bin' >> /etc/profile" || exit
+
+info "Install dependencies"
+incus exec nomad-dev -- bash -c 'source /etc/profile && cd /nomad && make deps' || exit
+info "Install lint dependencies"
+incus exec nomad-dev -- bash -c 'source /etc/profile && cd /nomad && make lint-deps' || exit
+info "Install modules"
+incus exec nomad-dev -- bash -c 'source /etc/profile && cd /nomad && go get' || exit
+
+# attempt to initalize any extra projects
+for path in "${init_paths[@]}"; do
+    info "Install dependencies - %s" "${path}"
+    incus exec nomad-dev -- bash -c "source /etc/profile && cd \"${path}\" && make deps" ||
+        warn "Dependency install failure in %s" "${path}"
+    info "Install modules - %s" "${path}"
+    incus exec nomad-dev -- bash -c "source /etc/profile && cd \"${path}\" && go get" ||
+        warn "Module install failure in %s" "${path}"
+done
+
+success "Nomad development instance is ready - nomad-dev"

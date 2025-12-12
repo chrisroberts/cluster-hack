@@ -1656,10 +1656,15 @@ function get-instance-of() {
 #
 # $1 - instance type server/client/consul (optional)
 function get-instances() {
-    local type info instances
+    local type info instances filter
     type="${1}"
     info="$(incus list --format json)" || exit
-    instances="$(jq -r '.[] | select(.name | contains("'"${CLUSTER_INSTANCE_PREFIX}${type}"'")) | .name' <<< "${info}")"
+    filter="${CLUSTER_INSTANCE_PREFIX}${type}"
+    if [ -n "${filter}" ]; then 
+        instances="$(jq -r '.[] | select(.name | contains("'"${filter}"'")) | .name' <<< "${info}")"
+    else
+        instances="$(jq -r '.[] | .name' <<< "${info}")"
+    fi
     printf "%s" "${instances}"
 }
 
