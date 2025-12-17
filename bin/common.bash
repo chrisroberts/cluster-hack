@@ -743,7 +743,7 @@ function consul-preinit() {
 
     run-hook "consul-preinit" "pre" "${instance}" || exit
 
-    key="$(incus exec "${instance}" -- /nomad/bin/consul keygen)" ||
+    key="$(incus exec "${instance}" -- /cluster-bins/consul keygen)" ||
         failure "Unable to generate nomad gossip key"
     store-value "consul-gossip-key" "${key}" || exit
 
@@ -1288,6 +1288,7 @@ function install-package() {
 
     # NOTE: Wrap this and send to bash since 'command' gets picked up as a keyword
     if incus exec "${instance}" -- bash -c "command -v apt-get > /dev/null 2>&1"; then
+        incus exec --env "DEBIAN_FRONTEND=noninteractive" "${instance}" -- apt-get update > /dev/null 2>&1
         incus exec --env "DEBIAN_FRONTEND=noninteractive" "${instance}" -- apt-get install -yq "${pkgs[@]}" > /dev/null 2>&1 ||
             failure "Failed to install packages via apt: %s" "${pkgs[*]}"
     else
@@ -1556,6 +1557,10 @@ function install-bins() {
     instance="$(name-to-instance "${name}")" || exit
     if is-instance-container "${instance}"; then
         link="link"
+    fi
+
+    if [ -n "${CLUSTER_HACK_FORCE_BIN_INSTALL}" ]; then
+        unset link
     fi
 
     run-hook "install-bins" "pre" "${instance}" || exit

@@ -14,6 +14,7 @@ admin_memory="2GiB"
 default_hosts_memory="2GiB"
 default_hosts_cpus="2"
 client_username="cluster-user"
+ceph_pool_name="nomad-pool"
 
 for arg in "${@}"; do
     shift
@@ -26,11 +27,12 @@ for arg in "${@}"; do
         "--image") set -- "${@}" "-i" ;;
         "--admin-cpus") set -- "${@}" "-a" ;;
         "--admin-memory") set -- "${@}" "-A" ;;
+        "--pool-name") set -- "${@}" "-p";;
         *) set -- "${@}" "${arg}" ;;
     esac
 done
 
-while getopts "H:vC:m:V:i:a:A:h" opt; do
+while getopts "H:vC:m:V:i:a:A:hp:" opt; do
     case "${opt}" in
         "H") hosts="${OPTARG}" ;;
         "v") vm="1" ;;
@@ -40,6 +42,7 @@ while getopts "H:vC:m:V:i:a:A:h" opt; do
         "i") image="${OPTARG}" ;;
         "a") admin_cpus="${OPTARG}" ;;
         "A") admin_memory="${OPTARG}" ;;
+        "p") ceph_pool_name="${OPTARG}" ;;
         "h") help="1" ;;
         *) help="1" ;;
     esac
@@ -201,7 +204,7 @@ function launch-ceph-host() {
 
     detail "creating storage volumes for %s" "${name}"
     for ((vidx=0; vidx<3; vidx++)); do
-        vol_name="${instance}-vol-${vidx}"
+        vol_name="${DIR_SHA}-${name}-vol-${vidx}"
         debug "creating volume %s of size %s for %s" "${vol_name}" "${volume}" "${instance}"
         incus storage volume create "${CLUSTER_VOLUME_POOL}" "${vol_name}" size="${volume}" --type=block > /dev/null 2>&1 ||
             failure "Failed to create block storage volume '%s' for %s" "${vol_name}" "${name}"
@@ -227,7 +230,7 @@ done
 hosts_result=""
 for pid in "${hosts_pids[@]}"; do
     if ! wait "${pid}"; then
-        result="1"
+        hosts_result="1"
     fi
 done
 
@@ -242,16 +245,12 @@ incus exec "${admin_instance}" -- ceph orch apply osd --all-available-devices > 
     failure "Could not create object storage daemons"
 
 detail "creating block device pool"
-incus exec "${admin_instance}" -- ceph osd pool create rbd 2 2 > /dev/null 2>&1 ||
+incus exec "${admin_instance}" -- ceph osd pool create "${ceph_pool_name}" 2 2 > /dev/null 2>&1 ||
     failure "Could not create RBD pool"
 
 detail "initializing block device pool (may take a bit to complete)"
-incus exec "${admin_instance}" -- rbd pool init rbd > /dev/null ||
+incus exec "${admin_instance}" -- rbd pool init "${ceph_pool_name}" > /dev/null ||
     failure "Unexpected error initializing RBD pool"
-
-detail "creating default image"
-incus exec "${admin_instance}" -- rbd create --pool rbd --image default --size "${volume/iB/}" ||
-    failure "Failed to create default image in block device pool"
 
 detail "creating Ceph client user"
 incus exec "${admin_instance}" -- ceph auth add "client.${client_username}" mon "allow r" osd "allow *" > /dev/null 2>&1 ||
@@ -265,9 +264,11 @@ debug "mark cluster setup status as complete for dashboard"
 incus exec "${admin_instance}" -- ceph config-key set "mgr/dashboard/cluster/status" "POST_INSTALLED" > /dev/null 2>&1 ||
     failure "Failed to mark cluster status as complete in dashboard"
 
+store-value "ceph-pool-name" "${ceph_pool_name}"
 store-value "ceph-client-username" "${client_username}"
 store-value "ceph-client-key" "${client_password}"
 
 success "Ceph cluster creation complete"
+detail "Pool: %s" "${ceph_pool_name}"
 detail "Dashboard: %s - Credentials: %s/%s" "${ui_url}" "${ui_user}" "${ui_password}"
 detail "Client Username: %s - Key: %s" "${client_username}" "${client_password}"

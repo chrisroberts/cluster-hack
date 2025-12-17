@@ -43,13 +43,18 @@ cluster-must-exist
 
 if [ -n "${ceph}" ]; then
     debug "deleting ceph cluster"
-    instance_list="$(get-instances)"
-    readarray -t instances <<< "${instance_list}"
+    cluster ceph destroy || exit
 elif [ "${#}" -lt "1" ]; then
     debug "deleting full cluster"
     full_delete="1"
     instance_list="$(get-instances)"
-    readarray -t instances <<< "${instance_list}"
+    readarray -t all_instances <<< "${instance_list}"
+    instances=()
+    for instance in "${all_instances[@]}"; do
+        if [[ "${instance}" != *"ceph"* ]]; then
+            instances+=("${instance}")
+        fi
+    done
 fi
 instances+=("${@}")
 

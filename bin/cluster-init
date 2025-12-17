@@ -45,8 +45,20 @@ bridge="$(incus network list -f json | jq -r '.[] | select(.name | contains("inc
     failure "Could not detect the incus bridge"
 
 profile="
-config: {}
+config:
+  security:
+    nesting: true
+    syscalls:
+      intercept:
+        mknod: true
+        setxattr: true
 description: cluster hack profile
+security:
+  nesting: true
+  syscalls:
+    intercept:
+      mknod: true
+      setxattr: true
 devices:
   eth0:
     name: eth0

@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Summary: delete existing ceph cluster
+
+# Defaults
+help=""
+
+while getopts "" opt; do
+    case "${opt}" in
+        *) help="1" ;;
+    esac
+done
+shift $((OPTIND-1))
+
+csource="${BASH_SOURCE[0]}"
+while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
+root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
+
+. "${root}/common.bash" || exit
+
+if [ -n "${help}" ]; then
+    printf "Usage %s\n" "${SCRIPT_NAME}"
+    exit 1
+fi
+
+# NOTE: Do not check for existing ceph instances. Just run
+# everything so cleanup can be done if required.
+
+ceph_instances="$(get-instances ceph)"
+if [ -n "${ceph_instances}" ]; then
+    info "Deleting Ceph storage cluster"
+
+    readarray -t instances <<< "${ceph_instances}"
+
+    pids=()
+    for instance in "${instances[@]}"; do
+        delete-instance "${instance}" &
+        pid="${!}"
+        pids+=("${pid}")
+        debug "deleting ceph instance - %s pid: %d" "${instance}" "${pid}"
+    done
+
+    result=0
+    for pid in "${pids[@]}"; do
+        if ! wait "${pid}"; then
+            debug "registered ceph instance deletion error - pid: %d" "${pid}"
+            result=1
+        fi
+    done
+    if [ -n "${result}" ]; then
+        failure "Failure encountered during Ceph storage cluster deletion"
+    fi
+fi
+
+volume_list="$(incus storage volume list default --format json)" ||
+    failure "Could not list existing storage volumes"
+
+filter="$(printf '.[] | select(.name | startswith("%s-ceph")) | .name' "${DIR_SHA}")"
+matches="$(jq -r "${filter}" <<< "${volume_list}")"
+
+if [ -n "${matches}" ]; then
+    info "Deleting Ceph storage volumes"
+    readarray -t volumes <<< "${matches}"
+
+    for vol in "${volumes[@]}"; do
+        debug "deleting ceph storage volume - %s" "${vol}"
+        incus storage volume delete default "${vol}" > /dev/null ||
+            failure "Failed to delete Ceph storage volume - %s" "${vol}"
+    done
+fi

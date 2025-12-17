@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Summary: info for existing cluster
+
+# Defaults
+help=""
+
+while getopts "" opt; do
+    case "${opt}" in
+        *) help="1";;
+    esac
+done
+shift $((OPTIND-1))
+
+csource="${BASH_SOURCE[0]}"
+while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
+root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
+
+
+. "${root}/common.bash" || exit
+
+if [ -n "${help}" ]; then
+    printf "Usage: %s\n" "${SCRIPT_NAME}"
+    exit 1
+fi
+
+cluster-must-have-ceph
+
+info "Ceph Cluster information"
+
+username="$(get-value "ceph-username")" || exit
+password="$(get-value "ceph-password")" || exit
+pool_name="$(get-value "ceph-pool-name")" || exit
+client_username="$(get-value "ceph-client-username")" || exit
+client_key="$(get-value "ceph-client-key")" || exit
+
+detail "Pool name: %s" "${pool_name}"
+detail "UI username: %s" "${username}"
+detail "UI password (original): %s" "${password}"
+detail "Client username: %s" "${client_username}"
+detail "Client key: %s" "${client_key}"
+
