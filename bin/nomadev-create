@@ -104,7 +104,7 @@ if [ -n "${projects_list}" ]; then
     for p in "${projects[@]}"; do
         name="${p##*/}"
         init_paths+=("/${name}")
-        incus config device add "nomad-dev" "${name}" "disk" "source=${p}" "path=/${name}" > /dev/null ||
+        incus config device add "nomad-dev" "${name}" "disk" "source=${p}" "path=/${name}" "shift=true" > /dev/null ||
             failure "Could not add project %s" "${name}"
     done
 fi
@@ -161,6 +161,9 @@ for path in "${init_paths[@]}"; do
     info "Install modules - %s" "${path}"
     incus exec nomad-dev -- bash -c "source /etc/profile && cd \"${path}\" && go get" ||
         warn "Module install failure in %s" "${path}"
+    # make git happy
+    info "Making git happy"
+    incus exec nomad-dev -- git config --global --add safe.directory "${path}" || exit
 done
 
 success "Nomad development instance is ready - nomad-dev"
