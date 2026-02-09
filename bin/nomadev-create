@@ -78,6 +78,20 @@ fi
 
 LAUNCH_ARGS+=("--ephemeral" "--profile" "${PROFILE_NAME}" "images:${image}")
 
+# Find the nomad project path
+nomad_path="$(incus profile device show cluster-hack)" || exit
+nomad_path="${nomad_path#*nomad-ro:}"
+nomad_path="${nomad_path#*source: }"
+nomad_path="${nomad_path%%$'\n' *}"
+
+# Prepend it to the projects list.
+# NOTE: This is done so the project has write access
+if [ -z "${projects_list}" ]; then
+    projects_list="${nomad_path}"
+else
+    projects_list="${nomad_path},${projects_list}"
+fi
+
 if [ -n "${cacher}" ]; then
     launch-cluster-cacher-instance
 fi
@@ -86,31 +100,33 @@ info "Creating new nomad dev instance"
 
 create-cluster-instance "nomad-dev" "raw" || exit
 
+incus exec "nomad-dev" -- mkdir -p "/projects" || exit
+
 projects=()
 init_paths=()
 if [ -n "${projects_list}" ]; then
     info "Installing projects"
     
     while [ -n "${projects_list}" ]; do
-        if [[ "${project_list}" != *","* ]]; then
+        if [[ "${projects_list}" != *","* ]]; then
             projects+=("${projects_list}")
             projects_list=""
             continue
         fi
         projects+=("${projects_list%%,*}")
-        projects_list="${projects_list#,*}"
+        projects_list="${projects_list#*,}"
     done
 
     for p in "${projects[@]}"; do
         name="${p##*/}"
-        init_paths+=("/${name}")
-        incus config device add "nomad-dev" "${name}" "disk" "source=${p}" "path=/${name}" "shift=true" > /dev/null ||
+        init_paths+=("/projects/${name}")
+        incus config device add "nomad-dev" "${name}" "disk" "source=${p}" "path=/projects/${name}" "shift=true" > /dev/null ||
             failure "Could not add project %s" "${name}"
     done
 fi
 
 for p in "${projects[@]}"; do
-    detail "%s -> %s" "${p}" "/${p##*/}"
+    detail "%s -> %s" "${p}" "/projects/${p##*/}"
 done
 
 if is-cacher-enabled; then
@@ -122,7 +138,7 @@ install-package "nomad-dev" "build-essential" "git" "curl" || exit
 
 go_version="$(incus exec nomad-dev -- grep -E "^go [[:digit:]].*$" /nomad/go.mod | sed 's/go //')"
 if [ -z "${go_version}" ]; then
-    error "Failed to discover go version for nomad"
+    failure "Failed to discover go version for nomad"
 fi
 
 if [ "$(incus exec nomad-dev -- uname --machine)" == "x86_64" ]; then
@@ -143,27 +159,23 @@ info "Installing go"
 incus exec nomad-dev -- tar -C /usr/local -xf /tmp/go.tgz || exit
 
 # add go to path
-incus exec nomad-dev -- bash -c "echo 'export PATH=\$PATH:/usr/local/go/bin:/nomad/bin' >> /etc/bash.bashrc" || exit
-incus exec nomad-dev -- bash -c "echo 'export PATH=\$PATH:/usr/local/go/bin:/nomad/bin' >> /etc/profile" || exit
-
-info "Install dependencies"
-incus exec nomad-dev -- bash -c 'source /etc/profile && cd /nomad && make deps' || exit
-info "Install lint dependencies"
-incus exec nomad-dev -- bash -c 'source /etc/profile && cd /nomad && make lint-deps' || exit
-info "Install modules"
-incus exec nomad-dev -- bash -c 'source /etc/profile && cd /nomad && go get' || exit
+incus exec nomad-dev -- bash -c "echo 'export PATH=\$PATH:/usr/local/go/bin:/nomad/bin:/root/go/bin' >> /etc/bash.bashrc" || exit
+incus exec nomad-dev -- bash -c "echo 'export PATH=\$PATH:/usr/local/go/bin:/nomad/bin:/root/go/bin' >> /etc/profile" || exit
 
 # attempt to initalize any extra projects
 for path in "${init_paths[@]}"; do
+    # make git happy
+    info "Making git happy on %s" "${path}"
+    incus exec nomad-dev -- git config --global --add safe.directory "${path}" || exit
     info "Install dependencies - %s" "${path}"
     incus exec nomad-dev -- bash -c "source /etc/profile && cd \"${path}\" && make deps" ||
         warn "Dependency install failure in %s" "${path}"
     info "Install modules - %s" "${path}"
     incus exec nomad-dev -- bash -c "source /etc/profile && cd \"${path}\" && go get" ||
         warn "Module install failure in %s" "${path}"
-    # make git happy
-    info "Making git happy"
-    incus exec nomad-dev -- git config --global --add safe.directory "${path}" || exit
+    name="${path##*/}"
+    info "Linking %s -> %s" "${path}" "/root/${name}"
+    incus exec nomad-dev -- ln -s "${path}" "/root/${name}"
 done
 
 success "Nomad development instance is ready - nomad-dev"

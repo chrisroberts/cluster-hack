@@ -32,8 +32,10 @@ password="$(get-value "ceph-password")" || exit
 pool_name="$(get-value "ceph-pool-name")" || exit
 client_username="$(get-value "ceph-client-username")" || exit
 client_key="$(get-value "ceph-client-key")" || exit
+dashboard="$(get-value "ceph-dashboard")" || exit
 
 detail "Pool name: %s" "${pool_name}"
+detail "Dashboard: %s" "${dashboard}"
 detail "UI username: %s" "${username}"
 detail "UI password (original): %s" "${password}"
 detail "Client username: %s" "${client_username}"

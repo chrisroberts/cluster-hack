@@ -158,6 +158,7 @@ ui_user="${ui_user%%$'\n'*}"
 ui_password="${result#*Password: }"
 ui_password="${ui_password%%$'\n'*}"
 
+store-value "ceph-dashboard" "${ui_url}"
 store-value "ceph-username" "${ui_user}"
 store-value "ceph-password" "${ui_password}"
 

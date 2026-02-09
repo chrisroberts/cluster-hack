@@ -68,7 +68,7 @@ devices:
     path: /
     pool: default
     type: disk
-  nomad:
+  nomad-ro:
     path: /nomad
     source: ${nomad_dir}
     type: disk
