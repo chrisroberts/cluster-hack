@@ -15,6 +15,7 @@ default_hosts_memory="2GiB"
 default_hosts_cpus="2"
 client_username="cluster-user"
 ceph_pool_name="nomad-pool"
+swap_size="2G"
 
 for arg in "${@}"; do
     shift
@@ -28,11 +29,12 @@ for arg in "${@}"; do
         "--admin-cpus") set -- "${@}" "-a" ;;
         "--admin-memory") set -- "${@}" "-A" ;;
         "--pool-name") set -- "${@}" "-p";;
+        "--swap-size") set -- "${@}" "-S";;
         *) set -- "${@}" "${arg}" ;;
     esac
 done
 
-while getopts "H:vC:m:V:i:a:A:hp:" opt; do
+while getopts "H:vC:m:V:i:a:A:hp:S:" opt; do
     case "${opt}" in
         "H") hosts="${OPTARG}" ;;
         "v") vm="1" ;;
@@ -43,6 +45,7 @@ while getopts "H:vC:m:V:i:a:A:hp:" opt; do
         "a") admin_cpus="${OPTARG}" ;;
         "A") admin_memory="${OPTARG}" ;;
         "p") ceph_pool_name="${OPTARG}" ;;
+        "S") swap_size="${OPTARG}";;
         "h") help="1" ;;
         *) help="1" ;;
     esac
@@ -182,6 +185,16 @@ function launch-ceph-host() {
         use-network "${instance}" "${CLUSTER_NETWORK}" || exit
     fi
 
+    detail "adding swap space (%s) on %s" "${swap_size}" "${name}"
+    incus exec "${instance}" -- fallocate -l "${swap_size}" /swapfile > /dev/null ||
+        failure "Could not create swapfile on %s" "${name}"
+    incus exec "${instance}" -- chmod 0600 /swapfile > /dev/null ||
+        failure "Could not set permissions on swapfile on %s" "${name}"
+    incus exec "${instance}" -- mkswap /swapfile > /dev/null ||
+        failure "Could not make swapfile on %s" "${name}"
+    incus exec "${instance}" -- swapon /swapfile > /dev/null ||
+        failure "Could not enable swapfile on %s" "${name}"
+    
     detail "installing required packages on %s" "${name}"
     install-package "${instance}" "openssh-server" "docker.io" "lvm2" ||
         failure "Could not install required Ceph host packages on %s" "${name}"

@@ -34,10 +34,25 @@ client_username="$(get-value "ceph-client-username")" || exit
 client_key="$(get-value "ceph-client-key")" || exit
 dashboard="$(get-value "ceph-dashboard")" || exit
 
+readarray -t hosts < <(get-instances ceph-host)
+hosts_list=()
+for h in "${hosts[@]}"; do
+    address="$(get-instance-address "${h}")" ||
+        failure "Could not get address for %s" "${h}"
+    hosts_list+=("${address}:6789")
+done
+
+if [ "${#hosts_list[@]}" -lt "1" ]; then
+    failure "Could not locate any ceph hosts"
+fi
+
+monitors="$(printf '", "%s' "${hosts_list[@]}")"
+monitors="[\"${monitors:4}\"]"
+
 detail "Pool name: %s" "${pool_name}"
 detail "Dashboard: %s" "${dashboard}"
 detail "UI username: %s" "${username}"
 detail "UI password (original): %s" "${password}"
 detail "Client username: %s" "${client_username}"
 detail "Client key: %s" "${client_key}"
-
+detail "Monitors: %s" "${monitors}"

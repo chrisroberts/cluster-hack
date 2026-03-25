@@ -46,7 +46,7 @@ if [ -n "${ceph_instances}" ]; then
             result=1
         fi
     done
-    if [ -n "${result}" ]; then
+    if [ "${result}" == "1" ]; then
         failure "Failure encountered during Ceph storage cluster deletion"
     fi
 fi

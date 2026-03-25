@@ -139,6 +139,12 @@ function launch-cluster-cacher-instance() {
     incus exec --env "DEBIAN_FRONTEND=noninteractive" "${CLUSTER_CACHER_INSTANCE}" -- apt-get install -yq apt-cacher-ng ||
         failure "Could not install apt-cacher-ng package on %s" "${CLUSTER_CACHER_INSTANCE}"
 
+    info "Adjusting cacher config and restarting service..."
+    incus exec "${CLUSTER_CACHER_INSTANCE}" -- bash -c "echo 'DlMaxRetries: 10' >> /etc/apt-cacher-ng/acng.conf" ||
+        failure "Could not adjust apt-cacher-ng configuration"
+    incus exec "${CLUSTER_CACHER_INSTANCE}" -- systemctl restart apt-cacher-ng.service ||
+        failure "Failed to restart apt cacher service"
+    
     # Force a check to clear the cached value
     is-cacher-enabled "force"
 
@@ -1516,6 +1522,14 @@ function apply-user-configs() {
         incus file push "${cfg}" "${instance}/etc/${service}/config.d/99-${slim_name}" > /dev/null ||
             failure "Error pushing %s configuration file (%s) into %s" "${service}" "${slim_name}" "${instance}"
     done
+
+    local license_path="${local_path}/license"
+    if [ -f "${license_path}" ]; then
+        local dst="/etc/${service}/license"
+        info "Installing %s license to %s on %s" "${service}" "${dst}" "${instance}"
+        incus file push "${license_path}" "${instance}${dst}" > /dev/null ||
+            failure "Error pushing license file into %s" "${instance}"
+    fi
 }
 
 # Enable and start service on instance
@@ -1688,12 +1702,14 @@ function get-nodes() {
 function get-instance-address() {
     local name="${1?Name is required}"
     local instance
-    instance="$(name-to-instance "${name}" "novalidate")" || exit
+    instance="$(name-to-instance "${name}")" || exit
 
     local result address network attempts
     attempts="0"
     network="$(cluster-network)" || exit
 
+    debug "performing address lookup for instance - %s" "${instance}"
+    
     # The address might not have made it to the leases list if the
     # instance was just created. If retrying, force a wait to allow
     # the information to be made available.
@@ -1860,11 +1876,13 @@ function get-node-address() {
 # $2 - Skip validation (optional)
 function name-to-instance() {
     local name="${1?Name is required}"
-    if [ -n "${2}" ] && [[ "${name}" == "${CLUSTER_INSTANCE_PREFIX}"* ]]; then
+    if [ -n "${2}" ] || [[ "${name}" == "${CLUSTER_INSTANCE_PREFIX}"* ]]; then
         printf "%s" "${name}"
         return
     fi
 
+    debug "attempting to expand name to instance - %s (validation: %s)" "${name}" "${2}"
+    
     local instance_names instance
     readarray -t instance_names < <(get-instances)
     for instance in "${instance_names[@]}"; do
@@ -2172,6 +2190,8 @@ function wait-for-instance() {
     local instance i
     instance="$(name-to-instance "${name}" "noverify")" || exit
 
+    debug "waiting for instance to come alive - %s" "${instance}"
+    
     for ((i=0;i<count;i++)); do
       if incus exec "${instance}" -- ls > /dev/null 2>&1; then
           return

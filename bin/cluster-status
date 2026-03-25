@@ -208,12 +208,25 @@ if [ -n "${ceph}" ]; then
     printf "\n» Ceph details: "
     if is-enabled "ceph"; then
         printf "\n"
-        printf " • %s - %s (%s)\n" "${instance}" "$(get-instance-display-status "ceph-admin")" "$(get-instance-address "ceph-admin")"
+        instance="${CLUSTER_INSTANCE_PREFIX}ceph-admin"
+        if is-instance-container "${instance}"; then
+            type="$(printf "%bcontainer%b" "${TEXT_LIGHT_BLUE}" "${TEXT_CLEAR}")"
+        else
+            type="$(printf "%bvm%b" "${TEXT_LIGHT_PURPLE}" "${TEXT_CLEAR}")"
+        fi
+
+        printf " • %s - %s (%s) (%b)\n" "${instance}" "$(get-instance-display-status "ceph-admin")" "$(get-instance-address "ceph-admin")" "${type}"
         for instance in "${ALL_INSTANCES[@]}"; do
             if [[ "${instance}" != *"ceph-host"* ]]; then
                 continue
             fi
-            printf " • %s - %s (%s)\n" "${instance}" "$(get-instance-display-status "${instance}")" "$(get-instance-address "${instance}")"
+            if is-instance-container "${instance}"; then
+                type="$(printf "%bcontainer%b" "${TEXT_LIGHT_BLUE}" "${TEXT_CLEAR}")"
+            else
+                type="$(printf "%bvm%b" "${TEXT_LIGHT_PURPLE}" "${TEXT_CLEAR}")"
+            fi
+            
+            printf " • %s - %s (%s) (%b)\n" "${instance}" "$(get-instance-display-status "${instance}")" "$(get-instance-address "${instance}")" "${type}"
         done
     else
         printf "%bnone%b" "${TEXT_RED}" "${TEXT_CLEAR}"

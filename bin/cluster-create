@@ -253,7 +253,8 @@ success "Nomad client instances created"
 # Init nomad (bootstrap the acl system)
 init-nomad "client0"
 
-addr="$(get-instance-address "client0")"
+addr="$(get-instance-address "client0")" ||
+    failure "Unable to determine address for initial client"
 info "Found client address for requests - %s" "${addr}"
 
 printf " • Waiting for client HTTP to be available.."
