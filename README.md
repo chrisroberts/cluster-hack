@@ -1,13 +1,17 @@
 # Cluster Hack
 
-Hacky little tool to quickly setup a nomad cluster for testing. Includes 
-support for consul backing. Leans on [incus](https://linuxcontainers.org/incus/) 
-to do the hard work and [direnv](https://direnv.net/) for easy 
-setup.
+Hacky little tool to quickly setup a nomad cluster for testing. Includes support
+for consul (with consul discovery and integration) and vault. Leans on [incus](https://linuxcontainers.org/incus/) 
+to do the hard work and [direnv](https://direnv.net/) for easy setup.
 
 ## Usage
 
-Designed to be used within a "workspace" directory. First checkout the repository:
+Designed to be used within a "workspace" directory. The directory is the "home" for 
+the cluster and multiple clusters can be created and run simultaneously.
+
+### Init 
+
+First checkout the repository:
 
 ``` sh
 $ git checkout https://github.com/chrisroberts/cluster-hack ~/projects/cluster-hack
@@ -22,7 +26,7 @@ $ cd ~/workspaces/my-test-cluster
 
 Now initialize the directory. The init command will want the path to the nomad 
 project. Really it just wants a path to a directory that includes `./bin/nomad` 
-(and `./bin/consul` if wanting to use consul):
+(along with `./bin/consul` and `./bin/vault` for consul and/or vault support):
 
 ``` sh
 $ ~/projects/cluster-hack/bin/cluster-init ~/projects/nomad
@@ -32,11 +36,23 @@ This will generate an incus profile and add it if it does not already exist. It
 will also create a `.envrc` within the directory. It includes `PATH` adjustments 
 to add the nomad bin directory and the cluster-hack bin directory. 
 
-Everything is ready to create a cluster:
+Everything is ready to create a cluster.
+
+### Create 
+
+Create a new nomad cluster:
 
 ``` sh
 $ cluster create --servers 3 --clients 3
 ```
+
+Create a new nomad cluster with consul:
+
+``` sh
+$ cluster create --servers 3 --clients 3 --consul 3
+```
+
+
 
 or, to include consul:
 
