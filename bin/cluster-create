@@ -289,7 +289,7 @@ envcontent+=("$(printf 'export NOMAD_TOKEN="%s"\n' "${nomad_token}")")
 if [ -n "${vault_enabled}" ]; then
     vault_addr="$(vault-address)" || exit
     vault_token="$(get-value "vault-root-token")" || exit
-    envcontent+=("$(printf 'export VAULT_ADDR="https://%s:8200"\n' "${vault_addr}")")
+    envcontent+=("$(printf 'export VAULT_ADDR="http://%s:8200"\n' "${vault_addr}")")
     envcontent+=("$(printf 'export VAULT_TOKEN="%s"' "${vault_token}")")
     envcontent+=("$(printf 'export VAULT_SKIP_VERIFY="true"\n')")
 fi

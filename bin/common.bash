@@ -558,7 +558,7 @@ function init-nomad() {
             local vaddr
             vaddr="$(vault-address)" || exit
             secret_id="$(get-value "vault-root-token")" || exit
-            export VAULT_ADDR="https://${vaddr}:8200"
+            export VAULT_ADDR="http://${vaddr}:8200"
             export VAULT_TOKEN="${secret_id}"
             export VAULT_SKIP_VERIFY="true"
 
@@ -631,7 +631,7 @@ function init-vault-server() {
     local addr
     addr="$(get-instance-address "${instance}")" || exit
     export VAULT_SKIP_VERIFY="true"
-    export VAULT_ADDR="https://${addr}:8200"
+    export VAULT_ADDR="http://${addr}:8200"
     local available attempts
     for ((attempts=0; attempts < 10; attempts++)); do
         if incus exec "${instance}" -- nc -z -w1 "${addr}" "8200" > /dev/null 2>&1; then
