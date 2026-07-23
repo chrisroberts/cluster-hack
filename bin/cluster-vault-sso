@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# Summary: enable vault sso login for nomad
+
+# This was lifted with slight modifications from:
+# https://developer.hashicorp.com/nomad/docs/secure/authentication/sso-vault
+
+# Defaults
+help=""
+assignment="cluster-assignment"
+username="cluster-user"
+group="cluster"
+key_name="cluster-key"
+provider_name="cluster-provider"
+password="cluster-password"
+
+for arg in "${@}"; do
+    shift
+    case "${arg}" in
+        "--assignment") set -- "${@}" "-a" ;;
+        "--username") set -- "${@}" "-u" ;;
+        "--group") set -- "${@}" "-g" ;;
+        "--key-name") set -- "${@}" "-k" ;;
+        "--provider-name") set -- "${@}" "-p" ;;
+        "--password") set -- "${@}" "-P" ;;
+        "--help") set -- "${@}" "-h" ;;
+        *) set -- "${@}" "${arg}" ;;
+    esac
+done
+
+
+while getopts "a:u:g:k:p:P:h" opt; do
+    case "${opt}" in
+        "a") assignment="${OPTARG}" ;;
+        "u") username="${OPTARG}" ;;
+        "g") group="${OPTARG}" ;;
+        "k") key_name="${OPTARG}" ;;
+        "p") provider_name="${OPTARG}" ;;
+        "P") password="${OPTARG}" ;;
+        *) help="1";;
+    esac
+done
+shift $((OPTIND-1))
+
+csource="${BASH_SOURCE[0]}"
+while [ -h "$csource" ] ; do csource="$(readlink "$csource")"; done
+root="$( cd -P "$( dirname "$csource" )/" && pwd )" || exit 1
+
+
+. "${root}/common.bash" || exit
+
+if [ -n "${help}" ]; then
+    printf "Usage: %s\n" "${SCRIPT_NAME}"
+    printf "\t--assignment NAME, -a NAME\tName of OIDC assignment\n"
+    printf "\t--group NAME, -g NAME\t\tName of identity group\n"
+    printf "\t--provider-name NAME, -p NAME\tName of the identity provider\n"
+    printf "\t--key-name NAME, -k NAME\tName of the client key\n"
+    printf "\t--username NAME, -u NAME\tUsername of user to create in Vault\n"
+    printf "\t--password PASS, -P PASS\tPassword of user to create in Vault\n"
+    exit 1
+fi
+
+cluster-must-have-vault
+
+info "Configuring Nomad for SSO login via Vault"
+
+detail "enabling userpass within Vault..."
+vault auth enable userpass >> /dev/null || exit
+vault write "auth/userpass/users/${username}" \
+    password="${password}" \
+    token_ttl="1h" > /dev/null || exit
+
+detail "creating Vault identity and group..."
+vault write identity/entity \
+    name="${username}" \
+    disabled=false > /dev/null || exit
+
+entity_id="$(vault read -field=id "identity/entity/name/${username}")" || exit
+vault write identity/group \
+    name="${group}" \
+    member_entity_ids="${entity_id}" > /dev/null || exit
+
+group_id="$(vault read -field=id "identity/group/name/${group}")" || exit
+result="$(vault auth list -detailed -format json)" || exit
+userpass_accessor="$(jq -r '.["userpass/"].accessor' <<< "${result}")"
+
+vault write identity/entity-alias \
+    name="${username}" \
+    canonical_id="${entity_id}" \
+    mount_accessor="${userpass_accessor}" > /dev/null || exit
+
+detail "creating Vault OIDC client..."
+vault write "identity/oidc/assignment/${assignment}" \
+    entity_ids="${entity_id}" \
+    group_ids="${group_id}" > /dev/null || exit
+
+vault write "identity/oidc/key/${key_name}" \
+    allowed_client_ids="*" \
+    verification_ttl="2h" \
+    rotation_period="1h" \
+    algorithm="RS256" > /dev/null || exit
+
+vault write identity/oidc/client/nomad \
+    redirect_uris="${NOMAD_ADDR}/ui/settings/tokens" \
+    assignments="${assignment}" \
+    key="${key_name}" \
+    id_token_ttl="30m" \
+    access_token_ttl="1h" > /dev/null || exit
+
+client_id="$(vault read -field=client_id identity/oidc/client/nomad)" || exit
+
+detail "creating the Vault OIDC provider..."
+
+user_scope_template='{"username": {{identity.entity.name}}}'
+vault write identity/oidc/scope/user \
+    description="The user scope provides claims using Vault identity entity metadata" \
+    template="$(base64 <<< "${user_scope_template}")" > /dev/null || exit
+
+groups_scope_template='{"groups": {{identity.entity.groups.names}}}'
+vault write identity/oidc/scope/groups \
+    description="The groups scope provides the groups claim using Vault group membership" \
+    template="$(base64 <<< "${groups_scope_template}")" > /dev/null || exit
+
+vault write "identity/oidc/provider/${provider_name}" \
+    allowed_client_ids="${client_id}" \
+    scopes_supported="groups" > /dev/null || exit
+
+detail "configuring Nomad OIDC auth..."
+result="$(curl -s "${VAULT_ADDR}/v1/identity/oidc/provider/my-provider/.well-known/openid-configuration")" || exit
+issuer="$(jq -r .issuer <<< "${result}")"
+
+client_secret="$(vault read -field=client_secret identity/oidc/client/nomad)"|| exit
+
+tmp_file="$(mktemp)" || exit
+printf 'namespace "default" {
+  policy = "read"
+}
+
+node {
+  policy = "read"
+}
+' > "${tmp_file}"
+
+policy_name="${group}-read"
+
+nomad acl policy apply "${policy_name}" "${tmp_file}" > /dev/null || exit
+nomad acl role create \
+    -name="${policy_name}" \
+    -policy="${policy_name}" > /dev/null || exit
+
+cat <<EOF > "${tmp_file}"
+{
+  "OIDCDiscoveryURL": "${issuer}",
+  "OIDCClientID": "${client_id}",
+  "OIDCClientSecret": "${client_secret}",
+  "BoundAudiences": ["${client_id}"],
+  "OIDCScopes": ["groups"],
+  "AllowedRedirectURIs": [
+    "${NOMAD_ADDR}/ui/settings/tokens"
+  ],
+  "ListClaimMappings": {
+    "groups": "roles"
+  }
+}
+EOF
+
+nomad acl auth-method create \
+    -default=true \
+    -name=vault \
+    -token-locality=global \
+    -max-token-ttl="10m" \
+    -type=oidc \
+    -config "@${tmp_file}" > /dev/null || exit
+
+nomad acl binding-rule create \
+    -auth-method=vault \
+    -bind-type=role \
+    -bind-name="${policy_name}" \
+    -selector="${group} in list.roles" > /dev/null || exit
+
+success "Nomad configured for SSO with Vault"
